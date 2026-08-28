@@ -37,6 +37,21 @@ class PluginIntegrasipamanDashboard extends CommonGLPI
     private const CARD_SESSION_SHARING_ID = 'jumpserver_session_sharing';
 
     /**
+     * Card id => widgettype pairs rendered, in order, by renderOverview()
+     * as the strip at the top of front/pbi.php. Every id here MUST be a key
+     * registered by getCardTypes(), and its widgettype MUST be one listed
+     * in that card's 'widgettype' array - the two are kept adjacent in this
+     * file so they stay in sync.
+     */
+    private const OVERVIEW_CARDS = [
+        [self::CARD_TOTAL_ID, 'bigNumber'],
+        [self::CARD_LOGIN_FAILURES_ID, 'bigNumber'],
+        [self::CARD_SESSION_SHARING_ID, 'bigNumber'],
+        [self::CARD_BY_TYPE_PIE_ID, 'pie'],
+        [self::CARD_BY_TYPE_BAR_ID, 'bar'],
+    ];
+
+    /**
      * Fixed lookback window for both cards (see class docblock: GLPI's
      * native card editor has no field for this to be end-user configurable).
      */
@@ -161,6 +176,69 @@ class PluginIntegrasipamanDashboard extends CommonGLPI
         ];
 
         return $cards;
+    }
+
+    /**
+     * Render the card "overview" strip shown at the top of front/pbi.php:
+     * this plugin's own registered dashboard cards, drawn directly through
+     * Glpi\Dashboard\Grid::getCardHtml() rather than a persisted
+     * Glpi\Dashboard\Grid layout.
+     *
+     * Why not a real (persisted, drag/resizable) Grid: a GLPI dashboard is
+     * private to its creator unless glpi_dashboards_rights rows grant it to
+     * matching entities/profiles/users/groups (Dashboard::checkRights()) -
+     * something the plugin cannot know at install time - and
+     * Grid::show() renders nothing at all for a viewer the dashboard was
+     * never shared with. getCardHtml() has no such check: it resolves the
+     * card id against the $PLUGIN_HOOKS['dashboard_cards'] catalog, runs
+     * the provider, and returns widget HTML. Persisted layout / drag /
+     * resize are given up on purpose; this page's own Session::checkRight()
+     * ('config', UPDATE) stays the sole access control.
+     *
+     * Each card uses its fixed 30-day lookback (resolveWhereClause() with
+     * no 'apply_filters' - this page wires no dashboard-level date filter).
+     */
+    public static function renderOverview(): void
+    {
+        $grid = new \Glpi\Dashboard\Grid();
+
+        echo '<div class="card mb-4"><div class="card-body">';
+        echo '<div class="integrasipaman-overview">';
+
+        foreach (self::OVERVIEW_CARDS as [$card_id, $widgettype]) {
+            echo '<div class="integrasipaman-overview-cell integrasipaman-overview-' . htmlescape($widgettype) . '">';
+            echo $grid->getCardHtml($card_id, ['args' => ['widgettype' => $widgettype]]);
+            echo '</div>';
+        }
+
+        echo '</div>';
+        echo '<p class="text-muted mt-3 mb-0">' . htmlescape(__(
+            'Overview totals are this plugin\'s own JumpServer event log (last 30 days). The detail tables below are read live from the PBI reporting database and may differ in coverage.',
+            'integrasipaman'
+        )) . '</p>';
+        echo '</div></div>';
+
+        echo <<<'CSS'
+<style>
+.integrasipaman-overview {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1rem;
+}
+.integrasipaman-overview-cell {
+    flex: 1 1 220px;
+    min-height: 160px;
+}
+.integrasipaman-overview-cell > * {
+    height: 100%;
+}
+.integrasipaman-overview-pie,
+.integrasipaman-overview-bar {
+    flex-basis: 340px;
+    min-height: 280px;
+}
+</style>
+CSS;
     }
 
     /**

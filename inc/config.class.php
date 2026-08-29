@@ -292,6 +292,29 @@ class PluginIntegrasipamanConfig extends CommonDBTM
         echo '<small class="form-hint">' . __('How many months of history the first cron run pulls. Default 13.', 'integrasipaman') . '</small>';
         echo '</div>';
 
+        echo '<hr class="my-4">';
+        echo '<h4>' . __('Command Risk Evaluation', 'integrasipaman') . '</h4>';
+        echo '<p class="text-muted">' . __('Rules for classifying terminal commands (cron "Classify JumpServer command records", every 15 min). One entry per line; blank lines and lines starting with # are ignored. Editing any list re-evaluates all history automatically.', 'integrasipaman') . '</p>';
+
+        foreach ([
+            'jumpserver_risk_keywords'          => [__('High-risk keywords', 'integrasipaman'), __('A command containing any of these (or JumpServer risk level >= 4) is flagged high-risk.', 'integrasipaman'), 8],
+            'jumpserver_admin_users'            => [__('Admin users', 'integrasipaman'), __('Format: Full Name(login) - exactly as shown in the command "User" column. High-risk actions by these users on production assets are MEDIUM, not HIGH.', 'integrasipaman'), 6],
+            'jumpserver_production_ip_prefixes' => [__('Production IP prefixes', 'integrasipaman'), __('An asset whose IP starts with one of these is "production". e.g. 10.0.0.', 'integrasipaman'), 3],
+        ] as $key => [$label, $hint, $rows]) {
+            echo '<div class="mb-3">';
+            echo '<label class="form-label" for="' . $key . '">' . htmlescape($label) . '</label>';
+            echo '<textarea class="form-control" id="' . $key . '" name="' . $key . '" rows="' . (int) $rows . '">'
+                . htmlescape($config_values[$key]) . '</textarea>';
+            echo '<small class="form-hint">' . htmlescape($hint) . '</small>';
+            echo '</div>';
+        }
+
+        echo '<div class="mb-3">';
+        echo '<a class="btn btn-outline-secondary" href="' . Plugin::getWebDir('integrasipaman') . '/front/reeval.php">'
+            . htmlescape(__('Re-evaluate now', 'integrasipaman')) . '</a>';
+        echo '<small class="form-hint d-block">' . htmlescape(__('Save first if you changed a list above. Runs for up to 25 seconds; the cron finishes anything left.', 'integrasipaman')) . '</small>';
+        echo '</div>';
+
         echo '<div class="mb-3">';
         echo Html::submit(__('Save'), ['name' => 'update_btn', 'class' => 'btn btn-primary']);
         echo '</div>';

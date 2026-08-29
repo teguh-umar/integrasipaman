@@ -44,6 +44,9 @@ if (isset($_POST['update'])) {
     $jumpserver_command_storage_id        = trim($_POST['jumpserver_command_storage_id'] ?? '');
     $jumpserver_terminal_retention_months = (string) PluginIntegrasipamanConfig::clampMonths($_POST['jumpserver_terminal_retention_months'] ?? '13');
     $jumpserver_terminal_backfill_months  = (string) PluginIntegrasipamanConfig::clampMonths($_POST['jumpserver_terminal_backfill_months'] ?? '13');
+    $jumpserver_risk_keywords          = trim($_POST['jumpserver_risk_keywords'] ?? '');
+    $jumpserver_admin_users            = trim($_POST['jumpserver_admin_users'] ?? '');
+    $jumpserver_production_ip_prefixes = trim($_POST['jumpserver_production_ip_prefixes'] ?? '');
 
     if ($jumpserver_url !== '' && filter_var($jumpserver_url, FILTER_VALIDATE_URL) === false) {
         Session::addMessageAfterRedirect(
@@ -76,6 +79,9 @@ if (isset($_POST['update'])) {
         'jumpserver_command_storage_id'        => $jumpserver_command_storage_id,
         'jumpserver_terminal_retention_months' => $jumpserver_terminal_retention_months,
         'jumpserver_terminal_backfill_months'  => $jumpserver_terminal_backfill_months,
+        'jumpserver_risk_keywords'          => $jumpserver_risk_keywords,
+        'jumpserver_admin_users'            => $jumpserver_admin_users,
+        'jumpserver_production_ip_prefixes' => $jumpserver_production_ip_prefixes,
     ]);
 
     Session::addMessageAfterRedirect(__('Configuration successfully updated.'));

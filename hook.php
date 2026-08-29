@@ -138,8 +138,6 @@ function plugin_integrasipaman_install(): bool
  */
 function plugin_integrasipaman_uninstall(): bool
 {
-    global $DB;
-
     include_once(__DIR__ . '/inc/cron.class.php');
     include_once(__DIR__ . '/inc/config.class.php');
 
@@ -150,17 +148,15 @@ function plugin_integrasipaman_uninstall(): bool
         array_keys(PluginIntegrasipamanConfig::CONFIG_DEFAULTS)
     );
 
-    $table = 'glpi_plugin_jumpserver_logs';
-
-    if ($DB->tableExists($table)) {
-        if (!$DB->doQuery("DROP TABLE `$table`")) {
-            trigger_error(
-                sprintf('Unable to drop table %s: %s', $table, $DB->error()),
-                E_USER_WARNING
-            );
-            return false;
-        }
-    }
+    // The event table (glpi_plugin_jumpserver_logs) is deliberately NOT
+    // dropped on uninstall. Its rows are pulled from JumpServer's audit
+    // API and JumpServer rotates its own audit history out over time, so a
+    // drop-and-reinstall would permanently lose every event older than
+    // whatever JumpServer still retains at re-pull time. Keeping the table
+    // means a reinstall's first cron run (which requests full history -
+    // see PluginIntegrasipamanCron::computeStartDate()) only back-fills
+    // the gap, with source_id dedup skipping everything already stored.
+    // A real purge is a manual DROP TABLE, which is not this hook's job.
 
     return true;
 }

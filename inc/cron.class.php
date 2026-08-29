@@ -28,10 +28,15 @@ class PluginIntegrasipamanCron extends CommonDBTM
     private const SESSION_SHARING_PATH = '/api/v1/terminal/session-sharings/';
 
     /**
-     * Fallback lookback window (in seconds) used only on the very first
-     * run, when the CronTask has no recorded last run date yet.
+     * DRF page size requested from every list endpoint, and the hard cap
+     * on how many pages one cron run will follow per endpoint (a runaway
+     * guard: PAGE_SIZE * MAX_PAGES rows is the most a single run pulls from
+     * one endpoint). Incremental runs stay far under this; only a first
+     * run / post-reinstall full history pull can approach it, and the next
+     * run picks up whatever the cap left behind.
      */
-    private const INITIAL_LOOKBACK_SECONDS = DAY_TIMESTAMP;
+    private const PAGE_SIZE = 100;
+    private const MAX_PAGES = 100;
 
     /**
      * Describe automatic actions provided by this class, used on the
@@ -80,14 +85,20 @@ class PluginIntegrasipamanCron extends CommonDBTM
 
         $credentials = [$base_url, $access_key_id, $access_key_secret, $org_id];
 
+        // null start_date = first run (or first run after a reinstall,
+        // since the table survives uninstall now): pull full history.
+        $window_label = $start_date !== null ? 'since ' . $start_date : 'full history';
+
         $total_imported = 0;
         $total_failed   = 0;
         $total_skipped  = 0;
         $any_fetch_failed = false;
 
         // --- Operating logs (general admin/config audit trail) ---------------
-        $operating_path = self::OPERATING_LOGS_PATH . '?' . http_build_query(['date_from' => $start_date]);
-        $operating_logs = self::signedGet($operating_path, ...$credentials);
+        $operating_query = $start_date !== null ? ['date_from' => $start_date] : [];
+        $operating_path  = self::OPERATING_LOGS_PATH
+            . ($operating_query !== [] ? '?' . http_build_query($operating_query) : '');
+        $operating_logs  = self::signedGet($operating_path, ...$credentials);
 
         if ($operating_logs === null) {
             $any_fetch_failed = true;
@@ -102,11 +113,11 @@ class PluginIntegrasipamanCron extends CommonDBTM
 
         // --- Login failures only (status=0 per JumpServer's own filter choices,
         // confirmed live: status=0 -> Failed, status=1 -> Success) ------------
-        $login_path = self::LOGIN_LOGS_PATH . '?' . http_build_query([
-            'status'    => '0',
-            'date_from' => $start_date,
-            'date_to'   => $end_date,
-        ]);
+        $login_query = ['status' => '0', 'date_to' => $end_date];
+        if ($start_date !== null) {
+            $login_query['date_from'] = $start_date;
+        }
+        $login_path     = self::LOGIN_LOGS_PATH . '?' . http_build_query($login_query);
         $login_failures = self::signedGet($login_path, ...$credentials);
 
         if ($login_failures === null) {
@@ -122,7 +133,8 @@ class PluginIntegrasipamanCron extends CommonDBTM
 
         // --- Session sharing (no date_from/date_to filter on this JumpServer
         // endpoint - confirmed live - so every run re-fetches the full result
-        // set; dedup relies entirely on source_id via importRows() below) ----
+        // set, now across all pages; dedup relies entirely on source_id via
+        // importRows() below) -----------------------------------------------
         $sharing_entries = self::signedGet(self::SESSION_SHARING_PATH, ...$credentials);
 
         if ($sharing_entries === null) {
@@ -137,11 +149,11 @@ class PluginIntegrasipamanCron extends CommonDBTM
         }
 
         $task->log(sprintf(
-            'JumpServer pull complete: %d imported, %d failed, %d already-imported skipped (since %s).',
+            'JumpServer pull complete: %d imported, %d failed, %d already-imported skipped (%s).',
             $total_imported,
             $total_failed,
             $total_skipped,
-            $start_date
+            $window_label
         ));
 
         $task->setVolume($total_imported);
@@ -156,23 +168,29 @@ class PluginIntegrasipamanCron extends CommonDBTM
     }
 
     /**
-     * Compute the ISO-8601 start date to request logs from, based on the
-     * CronTask's last successful run, falling back to a fixed lookback
-     * window on first run.
+     * ISO-8601 start date to request logs from: the CronTask's last
+     * successful run for an incremental pull, or null on the first run to
+     * request the full available history (no date_from at all).
+     *
+     * A reinstall lands here with a null lastrun again, but the event
+     * table now survives uninstall, so a null-start full pull just re-
+     * confirms the rows already present (importRows() skips them by
+     * source_id) and fills the gap for the period the plugin was absent -
+     * as far back as JumpServer's own audit retention still goes.
      *
      * @param CronTask $task The running CronTask instance.
      *
-     * @return string Formatted start date (Y-m-d\TH:i:s).
+     * @return string|null Formatted start date (Y-m-d\TH:i:s), or null for a full pull.
      */
-    private static function computeStartDate(CronTask $task): string
+    private static function computeStartDate(CronTask $task): ?string
     {
         $last_run = $task->fields['lastrun'] ?? null;
 
-        $start_timestamp = !empty($last_run)
-            ? strtotime($last_run)
-            : (time() - self::INITIAL_LOOKBACK_SECONDS);
+        if (empty($last_run)) {
+            return null;
+        }
 
-        return date('Y-m-d\TH:i:s', $start_timestamp);
+        return date('Y-m-d\TH:i:s', strtotime($last_run));
     }
 
     /**
@@ -232,7 +250,96 @@ class PluginIntegrasipamanCron extends CommonDBTM
     }
 
     /**
-     * Call the JumpServer REST API and return the decoded "results" list.
+     * Fetch every page of a JumpServer list endpoint and return the
+     * concatenated entries.
+     *
+     * JumpServer paginates with DRF's limit/offset style and returns an
+     * absolute "next" URL (or null on the last page). Each page is a
+     * separate signed request - the signature covers the request path
+     * including its query string, so the offset/limit of every page has to
+     * be signed afresh; "next" is reduced to path+query and re-based on the
+     * configured base URL (its host may differ from base_url if JumpServer
+     * has a distinct SITE_URL). A non-paginated payload (a bare list, no
+     * "results"/"next") is returned as-is after one request.
+     *
+     * A page-1 failure returns null (hard failure, matching the old
+     * behaviour); a failure partway through pagination returns the entries
+     * gathered so far, leaving the rest for the next cron run.
+     *
+     * @param string $api_path          Relative path + query string for the first page.
+     * @param string $base_url          Configured JumpServer base URL/IP.
+     * @param string $access_key_id     Configured JumpServer Access Key ID.
+     * @param string $access_key_secret Configured JumpServer Access Key Secret.
+     * @param string $org_id            Configured JumpServer organization ID (X-JMS-ORG header).
+     *
+     * @return array<int, mixed>|null All entries across every page, or null on a first-page failure.
+     */
+    private static function signedGet(
+        string $api_path,
+        string $base_url,
+        string $access_key_id,
+        string $access_key_secret,
+        string $org_id
+    ): ?array {
+        $entries = [];
+        $path    = self::appendLimit($api_path);
+
+        for ($page = 0; $page < self::MAX_PAGES && $path !== null; $page++) {
+            $body = self::signedGetPage($path, $base_url, $access_key_id, $access_key_secret, $org_id);
+
+            if ($body === null) {
+                return $page === 0 ? null : $entries;
+            }
+
+            $results = $body['results'] ?? $body;
+
+            if (is_array($results)) {
+                foreach ($results as $entry) {
+                    $entries[] = $entry;
+                }
+            }
+
+            $next = $body['next'] ?? null;
+            $path = is_string($next) && $next !== '' ? self::nextPath($next) : null;
+        }
+
+        return $entries;
+    }
+
+    /**
+     * Append DRF's page-size parameter to a path unless it already carries
+     * one (e.g. a "next" URL, which encodes its own limit).
+     */
+    private static function appendLimit(string $api_path): string
+    {
+        if (strpos($api_path, 'limit=') !== false) {
+            return $api_path;
+        }
+
+        $separator = strpos($api_path, '?') === false ? '?' : '&';
+
+        return $api_path . $separator . 'limit=' . self::PAGE_SIZE;
+    }
+
+    /**
+     * Reduce a DRF "next" URL to the path+query this class signs and sends
+     * (the host is discarded - see signedGet()).
+     *
+     * @return string|null Path with query string, or null if unparseable.
+     */
+    private static function nextPath(string $next_url): ?string
+    {
+        $parts = parse_url($next_url);
+
+        if ($parts === false || !isset($parts['path'])) {
+            return null;
+        }
+
+        return $parts['path'] . (isset($parts['query']) ? '?' . $parts['query'] : '');
+    }
+
+    /**
+     * Fetch and decode one page from the JumpServer REST API.
      *
      * Authenticates via JumpServer's Access Key HTTP Signature scheme
      * (HMAC-SHA256 request signing), not a plain bearer token - JumpServer
@@ -250,9 +357,9 @@ class PluginIntegrasipamanCron extends CommonDBTM
      * @param string $access_key_secret Configured JumpServer Access Key Secret.
      * @param string $org_id            Configured JumpServer organization ID (X-JMS-ORG header).
      *
-     * @return array<int, mixed>|null Decoded results, or null on failure.
+     * @return array<string, mixed>|null Decoded response body, or null on failure.
      */
-    private static function signedGet(
+    private static function signedGetPage(
         string $api_path,
         string $base_url,
         string $access_key_id,
@@ -312,9 +419,11 @@ class PluginIntegrasipamanCron extends CommonDBTM
             return null;
         }
 
-        // JumpServer's DRF-paginated endpoints wrap the list in "results";
-        // fall back to treating the whole payload as the list otherwise.
-        return $data['results'] ?? $data;
+        // Return the full body: signedGet() reads both "results" (the page
+        // of entries) and "next" (the following page URL, or null) off it.
+        // A non-paginated endpoint returns a bare list, handled by the
+        // caller's "$body['results'] ?? $body" fallback.
+        return $data;
     }
 
     /**

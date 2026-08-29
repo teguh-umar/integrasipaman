@@ -108,6 +108,7 @@ class PluginIntegrasipamanTerminalPull extends CommonDBTM
 
         $inserted = 0;
         $skipped  = 0;
+        $empty_id = 0;
 
         // Collect the incoming ids (non-empty), then find which already exist.
         $incoming_ids = [];
@@ -136,6 +137,14 @@ class PluginIntegrasipamanTerminalPull extends CommonDBTM
         foreach ($rows as $row) {
             $id = (string) ($row[$id_col] ?? '');
 
+            // No dedup key: skip it rather than insert unconditionally on
+            // every run (would double-insert daily if the API omits id).
+            if ($id === '') {
+                $skipped++;
+                $empty_id++;
+                continue;
+            }
+
             if ($id !== '' && (isset($existing[$id]) || isset($seen_this_batch[$id]))) {
                 $skipped++;
                 continue;
@@ -153,6 +162,13 @@ class PluginIntegrasipamanTerminalPull extends CommonDBTM
                     E_USER_WARNING
                 );
             }
+        }
+
+        if ($empty_id > 0) {
+            trigger_error(
+                sprintf('insertDedup: %d row(s) with empty %s skipped (no dedup key)', $empty_id, $id_col),
+                E_USER_WARNING
+            );
         }
 
         return ['inserted' => $inserted, 'skipped' => $skipped];
@@ -278,5 +294,137 @@ class PluginIntegrasipamanTerminalPull extends CommonDBTM
         }
 
         return self::pullMonth($ym);
+    }
+
+    /**
+     * @param string $name
+     * @return array<string, string>
+     */
+    public static function cronInfo(string $name): array
+    {
+        if ($name === 'pull_terminal_activity') {
+            return ['description' => 'Pull JumpServer terminal command & session records, then prune past the retention window'];
+        }
+
+        return [];
+    }
+
+    /**
+     * The list of "YYYY-MM" months a cron run should (re-)pull.
+     *
+     * First run (both tables empty): the last $backfill_months calendar
+     * months, oldest first. Every later run: last month + this month, so a
+     * daily run keeps re-scanning the previous month until it rolls off -
+     * catching command records JumpServer flushed late. jms_id dedup makes
+     * the re-scan cheap.
+     *
+     * @return array<int, string>
+     */
+    private static function monthsToPull(int $backfill_months): array
+    {
+        global $DB;
+
+        $has_data = $DB->request(['FROM' => self::COMMANDS_TABLE, 'COUNT' => 'c'])->current()['c'] > 0
+            || $DB->request(['FROM' => self::SESSIONS_TABLE, 'COUNT' => 'c'])->current()['c'] > 0;
+
+        if (!$has_data) {
+            $months = [];
+            for ($i = $backfill_months - 1; $i >= 0; $i--) {
+                $months[] = date('Y-m', strtotime("first day of -{$i} months"));
+            }
+            return $months;
+        }
+
+        return [
+            date('Y-m', strtotime('first day of -1 month')),
+            date('Y-m'),
+        ];
+    }
+
+    /**
+     * Delete command rows older than $months by executed_at and session
+     * rows older than $months by date_start.
+     *
+     * @return array{commands: int, sessions: int} rows deleted
+     */
+    private static function prune(int $months): array
+    {
+        global $DB;
+
+        $cutoff = date('Y-m-d H:i:s', strtotime("-{$months} months"));
+
+        $DB->delete(self::COMMANDS_TABLE, ['executed_at' => ['<', $cutoff]]);
+        $cmd = $DB->affectedRows();
+
+        $DB->delete(self::SESSIONS_TABLE, ['date_start' => ['<', $cutoff]]);
+        $sess = $DB->affectedRows();
+
+        return ['commands' => $cmd, 'sessions' => $sess];
+    }
+
+    /**
+     * CronTask 'pull_terminal_activity' (registered in hook.php, daily,
+     * MODE_EXTERNAL).
+     *
+     * @return int 1 on success (even if zero rows), 0 only if the very
+     *             first endpoint call of the run failed outright.
+     */
+    public static function cronPull_terminal_activity(CronTask $task): int
+    {
+        $config    = Config::getConfigurationValues(PluginIntegrasipamanConfig::CONFIG_CONTEXT);
+        $retention = PluginIntegrasipamanConfig::clampMonths($config['jumpserver_terminal_retention_months'] ?? '13');
+        $backfill  = PluginIntegrasipamanConfig::clampMonths($config['jumpserver_terminal_backfill_months'] ?? '13');
+
+        if (trim($config['jumpserver_url'] ?? '') === ''
+            || trim($config['jumpserver_access_key_id'] ?? '') === ''
+            || trim($config['jumpserver_access_key_secret'] ?? '') === ''
+            || trim($config['jumpserver_command_storage_id'] ?? '') === '') {
+            $task->log('JumpServer URL / Access Key / Command Storage ID not configured. Skipping.');
+            $task->setVolume(0);
+            return 0;
+        }
+
+        $months = self::monthsToPull($backfill);
+        $task->log(sprintf('Terminal pull: %d month(s) [%s].', count($months), implode(', ', $months)));
+
+        $total_inserted = 0;
+        $first_call_failed = null;
+
+        foreach ($months as $ym) {
+            $r = self::pullMonth($ym);
+
+            foreach (['commands', 'sessions'] as $kind) {
+                $c = $r[$kind];
+                $total_inserted += $c['inserted'];
+
+                if ($first_call_failed === null) {
+                    $first_call_failed = !$c['ok'];
+                }
+
+                $task->log(sprintf(
+                    '  %s %s: %d fetched, %d inserted, %d skipped%s.',
+                    $ym,
+                    $kind,
+                    $c['fetched'],
+                    $c['inserted'],
+                    $c['skipped'],
+                    $c['ok'] ? '' : ' (FETCH FAILED)'
+                ));
+            }
+        }
+
+        $pruned = self::prune($retention);
+        $task->log(sprintf(
+            'Retention prune (> %d months): %d command rows, %d session rows deleted.',
+            $retention,
+            $pruned['commands'],
+            $pruned['sessions']
+        ));
+
+        $task->setVolume($total_inserted);
+
+        // Hard failure only if the very first endpoint call failed and
+        // nothing at all was imported - same rule as pull_historical_logs.
+        return ($first_call_failed === true && $total_inserted === 0) ? 0 : 1;
     }
 }

@@ -362,7 +362,13 @@ class PluginIntegrasipamanTerminalPull extends CommonDBTM
         // Loop stops at 2 because prev(1) and current(0) are always appended.
         for ($i = $backfill_months - 1; $i >= 2; $i--) {
             $ym = date('Y-m', strtotime("first day of -{$i} months"));
-            if (!self::monthHasData($ym)) {
+            // Re-pull the month if EITHER table is missing its data - a
+            // month where only sessions came through (e.g. an earlier run
+            // whose commands endpoint was misconfigured) still needs its
+            // commands. pullMonth() fetches both endpoints regardless;
+            // jms_id dedup makes the already-present half cheap.
+            if (!self::monthHasRows(self::COMMANDS_TABLE, 'executed_at', $ym)
+                || !self::monthHasRows(self::SESSIONS_TABLE, 'date_start', $ym)) {
                 $months[] = $ym;
             }
         }
@@ -373,8 +379,8 @@ class PluginIntegrasipamanTerminalPull extends CommonDBTM
         return $months;
     }
 
-    /** True if either table already holds a row inside this YYYY-MM. */
-    private static function monthHasData(string $ym): bool
+    /** True if $table has a row whose $date_col falls inside this YYYY-MM. */
+    private static function monthHasRows(string $table, string $date_col, string $ym): bool
     {
         global $DB;
 
@@ -383,29 +389,16 @@ class PluginIntegrasipamanTerminalPull extends CommonDBTM
         $last    = (int) date('t', mktime(0, 0, 0, $m, 1, $y));
         $end     = sprintf('%04d-%02d-%02d 23:59:59', $y, $m, $last);
 
-        $cmd = $DB->request([
+        $count = $DB->request([
             'COUNT' => 'c',
-            'FROM'  => self::COMMANDS_TABLE,
+            'FROM'  => $table,
             'WHERE' => [
-                ['executed_at' => ['>=', $start]],
-                ['executed_at' => ['<=', $end]],
+                [$date_col => ['>=', $start]],
+                [$date_col => ['<=', $end]],
             ],
         ])->current()['c'] ?? 0;
 
-        if ($cmd > 0) {
-            return true;
-        }
-
-        $sess = $DB->request([
-            'COUNT' => 'c',
-            'FROM'  => self::SESSIONS_TABLE,
-            'WHERE' => [
-                ['date_start' => ['>=', $start]],
-                ['date_start' => ['<=', $end]],
-            ],
-        ])->current()['c'] ?? 0;
-
-        return $sess > 0;
+        return $count > 0;
     }
 
     /**

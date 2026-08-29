@@ -54,6 +54,7 @@ function plugin_init_integrasipaman(): void
         Plugin::registerClass('PluginIntegrasipamanConfig');
         Plugin::registerClass('PluginIntegrasipamanDashboard');
         Plugin::registerClass('PluginIntegrasipamanJmsApi');
+        Plugin::registerClass('PluginIntegrasipamanTerminalPull');
 
         // Expose a "Configure" link for this plugin under Setup > Plugins.
         if (Session::haveRight('config', UPDATE)) {

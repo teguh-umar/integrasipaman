@@ -66,6 +66,44 @@ class PluginIntegrasipamanTerminalPull extends CommonDBTM
     }
 
     /**
+     * JumpServer's session "duration" is Python str(timedelta): "H:MM:SS",
+     * or "N day[s], H:MM:SS" for long sessions, or (on some versions) a
+     * plain number of seconds. Normalise all of those to an integer count
+     * of seconds for the `duration` INT column - a bare (int) cast on
+     * "0:03:32" silently yields 0.
+     *
+     * @param mixed $raw
+     */
+    private static function durationToSeconds($raw): int
+    {
+        $raw = trim((string) $raw);
+
+        if ($raw === '') {
+            return 0;
+        }
+
+        if (ctype_digit($raw)) {
+            return (int) $raw;
+        }
+
+        $days = 0;
+        if (preg_match('/^(\d+)\s*days?,\s*(.+)$/i', $raw, $m)) {
+            $days = (int) $m[1];
+            $raw  = trim($m[2]);
+        }
+
+        $parts = explode(':', $raw);
+        if (count($parts) !== 3) {
+            return 0;
+        }
+
+        return $days * 86400
+            + (int) $parts[0] * 3600
+            + (int) $parts[1] * 60
+            + (int) $parts[2];
+    }
+
+    /**
      * Map one /api/v1/terminal/sessions/ entry to a
      * glpi_plugin_jumpserver_sessions row.
      *
@@ -84,7 +122,7 @@ class PluginIntegrasipamanTerminalPull extends CommonDBTM
             'protocol'       => mb_substr((string) ($e['protocol'] ?? ''), 0, 32),
             'login_from'     => mb_substr((string) ($e['login_from']['value'] ?? ''), 0, 32),
             'remote_addr'    => mb_substr((string) ($e['remote_addr'] ?? ''), 0, 45),
-            'duration'       => (int) ($e['duration'] ?? 0),
+            'duration'       => self::durationToSeconds($e['duration'] ?? 0),
             'command_amount' => (int) ($e['command_amount'] ?? 0),
             'is_success'     => !empty($e['is_success']) ? 1 : 0,
             'is_finished'    => !empty($e['is_finished']) ? 1 : 0,

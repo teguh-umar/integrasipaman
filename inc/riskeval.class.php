@@ -254,7 +254,7 @@ class PluginIntegrasipamanRiskEval extends CommonGLPI
             // (same chunk/loop structure). Do not switch pre-emptively -
             // post-deploy verification decides.
             $iterator = $DB->request([
-                'SELECT'     => ['c.id', 'c.risk_level', 'c.command', 'c.asset', 'c.jms_user'],
+                'SELECT'     => ['c.id', 'c.risk_level', 'c.command', 'c.asset', 'c.jms_user', 'e.id AS eval_id'],
                 'FROM'       => self::COMMANDS_TABLE . ' AS c',
                 'LEFT JOIN'  => [
                     self::EVAL_TABLE . ' AS e' => [
@@ -273,7 +273,13 @@ class PluginIntegrasipamanRiskEval extends CommonGLPI
             $batch  = 0;
             $failed = 0;
             foreach ($iterator as $row) {
-                if (!self::upsertEval(self::evaluateRow($row, $rules, $hash))) {
+                // The LEFT JOIN already told us whether an eval row exists,
+                // so we go straight to INSERT or UPDATE. A rules-change
+                // re-eval makes every selected row an UPDATE - never
+                // attempt an INSERT that is bound to hit the UNIQUE
+                // commands_id and log a "Duplicate entry" SQL error.
+                $has_eval = ($row['eval_id'] ?? null) !== null;
+                if (!self::writeEval(self::evaluateRow($row, $rules, $hash), $has_eval)) {
                     $failed++;
                 }
                 $batch++;
@@ -308,33 +314,37 @@ class PluginIntegrasipamanRiskEval extends CommonGLPI
     }
 
     /**
-     * Insert one eval row, or update it in place if a row for that
-     * commands_id already exists (UNIQUE key). GLPI's query builder has no
-     * ON DUPLICATE KEY UPDATE, so this is insert-then-update-on-conflict.
+     * Write one eval row. $has_existing comes from the caller's LEFT JOIN
+     * (e.id present) - when true, this is a straight UPDATE keyed by the
+     * UNIQUE commands_id, with no INSERT attempt (GLPI's query builder has
+     * no ON DUPLICATE KEY UPDATE, and a doomed INSERT logs a "Duplicate
+     * entry" SQL error for every already-evaluated row on a rules-change
+     * re-eval). When false, INSERT; a lost race against a concurrent pass
+     * still falls through to UPDATE.
      *
      * @param array<string, mixed> $vals Output of evaluateRow().
-     * @return bool true when the eval row is now current (insert succeeded,
-     *              or the duplicate-key update ran); false when a write
-     *              failed (non-"Duplicate entry" insert error, or the
-     *              update returned falsy).
+     * @return bool true when the eval row is now current; false when the
+     *              write failed.
      */
-    private static function upsertEval(array $vals): bool
+    private static function writeEval(array $vals, bool $has_existing): bool
     {
         global $DB;
 
-        if ($DB->insert(self::EVAL_TABLE, $vals)) {
-            return true;
+        if (!$has_existing) {
+            if ($DB->insert(self::EVAL_TABLE, $vals)) {
+                return true;
+            }
+            if (!str_contains((string) $DB->error(), 'Duplicate entry')) {
+                trigger_error(
+                    sprintf('command_eval insert failed for commands_id %d: %s', $vals['commands_id'] ?? 0, $DB->error()),
+                    E_USER_WARNING
+                );
+                return false;
+            }
+            // Duplicate: a concurrent pass beat us to it - fall through to UPDATE.
         }
 
-        if (!str_contains((string) $DB->error(), 'Duplicate entry')) {
-            trigger_error(
-                sprintf('command_eval insert failed for commands_id %d: %s', $vals['commands_id'] ?? 0, $DB->error()),
-                E_USER_WARNING
-            );
-            return false;
-        }
-
-        $id = $vals['commands_id'];
+        $id = (int) $vals['commands_id'];
         unset($vals['commands_id']);
         $vals['date_eval'] = $_SESSION['glpi_currenttime'] ?? date('Y-m-d H:i:s');
         if (!$DB->update(self::EVAL_TABLE, $vals, ['commands_id' => $id])) {

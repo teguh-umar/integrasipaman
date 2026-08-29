@@ -188,6 +188,58 @@ function plugin_integrasipaman_install(): bool
         }
     }
 
+    $eval_table = 'glpi_plugin_jumpserver_command_eval';
+
+    if (!$DB->tableExists($eval_table)) {
+        $default_charset   = DBConnection::getDefaultCharset();
+        $default_collation = DBConnection::getDefaultCollation();
+        $default_key_sign  = DBConnection::getDefaultPrimaryKeySignOption();
+
+        // One row per glpi_plugin_jumpserver_commands row - the risk
+        // classification (see inc/riskeval.class.php). UNIQUE(commands_id)
+        // is the 1:1 link and the upsert key; the FK cascade keeps this
+        // table consistent when Piece 1's retention prune deletes commands.
+        $query = "CREATE TABLE `$eval_table` (
+            `id` INT {$default_key_sign} NOT NULL AUTO_INCREMENT,
+            `commands_id` INT {$default_key_sign} NOT NULL,
+            `is_high_risk` TINYINT(1) NOT NULL DEFAULT 0,
+            `keyword_hit` VARCHAR(64) NOT NULL DEFAULT '',
+            `risk_category` VARCHAR(32) NOT NULL DEFAULT '',
+            `asset_ip` VARCHAR(45) NOT NULL DEFAULT '',
+            `asset_is_production` TINYINT(1) NOT NULL DEFAULT 0,
+            `user_is_admin` TINYINT(1) NOT NULL DEFAULT 0,
+            `priority` VARCHAR(8) NOT NULL DEFAULT '',
+            `catatan` VARCHAR(48) NOT NULL DEFAULT '',
+            `rules_hash` CHAR(40) NOT NULL DEFAULT '',
+            `date_eval` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (`id`),
+            UNIQUE KEY `commands_id` (`commands_id`),
+            KEY `is_high_risk` (`is_high_risk`),
+            KEY `risk_category` (`risk_category`),
+            KEY `priority` (`priority`),
+            KEY `rules_hash` (`rules_hash`),
+            CONSTRAINT `fk_jumpserver_command_eval_commands`
+                FOREIGN KEY (`commands_id`)
+                REFERENCES `glpi_plugin_jumpserver_commands` (`id`)
+                ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET={$default_charset} COLLATE={$default_collation}";
+
+        if (!$DB->doQuery($query)) {
+            // If the target instance rejects the FK (some GLPI schema
+            // tooling strips FKs), retry without it - Piece 1's prune()
+            // deletes matching eval rows explicitly as a fallback (Task 3).
+            $query_nofk = preg_replace('/,\s*CONSTRAINT `fk_jumpserver_command_eval_commands`.*?ON DELETE CASCADE/s', '', $query);
+
+            if (!$DB->doQuery($query_nofk)) {
+                trigger_error(
+                    sprintf('Unable to create table %s: %s', $eval_table, $DB->error()),
+                    E_USER_WARNING
+                );
+                return false;
+            }
+        }
+    }
+
     include_once(__DIR__ . '/inc/cron.class.php');
 
     CronTask::Register(
@@ -208,6 +260,18 @@ function plugin_integrasipaman_install(): bool
         DAY_TIMESTAMP,
         [
             'comment' => 'Pull JumpServer terminal command & session records, then prune past the retention window',
+            'mode'    => CronTask::MODE_EXTERNAL,
+        ]
+    );
+
+    include_once(__DIR__ . '/inc/riskeval.class.php');
+
+    CronTask::Register(
+        'PluginIntegrasipamanRiskEval',
+        'evaluate_commands',
+        15 * MINUTE_TIMESTAMP,
+        [
+            'comment' => 'Classify JumpServer command records (high-risk, category, priority) into the command-eval table',
             'mode'    => CronTask::MODE_EXTERNAL,
         ]
     );
@@ -241,6 +305,7 @@ function plugin_integrasipaman_uninstall(): bool
 
     CronTask::Unregister('PluginIntegrasipamanCron');
     CronTask::Unregister('PluginIntegrasipamanTerminalPull');
+    CronTask::Unregister('PluginIntegrasipamanRiskEval');
 
     Config::deleteConfigurationValues(
         PluginIntegrasipamanConfig::CONFIG_CONTEXT,
@@ -248,7 +313,8 @@ function plugin_integrasipaman_uninstall(): bool
     );
 
     // The event tables (glpi_plugin_jumpserver_logs,
-    // glpi_plugin_jumpserver_commands, glpi_plugin_jumpserver_sessions) are
+    // glpi_plugin_jumpserver_commands, glpi_plugin_jumpserver_sessions,
+    // glpi_plugin_jumpserver_command_eval) are
     // deliberately NOT dropped on uninstall. Their rows are pulled from
     // JumpServer's audit API and JumpServer rotates its own audit history
     // out over time, so a drop-and-reinstall would permanently lose every

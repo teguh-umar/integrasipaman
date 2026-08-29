@@ -56,6 +56,7 @@ function plugin_init_integrasipaman(): void
         // PluginIntegrasipamanJmsApi is a pure transport class, not a GLPI
         // itemtype - it is loaded via require_once where used, not registered.
         Plugin::registerClass('PluginIntegrasipamanTerminalPull');
+        Plugin::registerClass('PluginIntegrasipamanRiskEval');
 
         // Expose a "Configure" link for this plugin under Setup > Plugins.
         if (Session::haveRight('config', UPDATE)) {

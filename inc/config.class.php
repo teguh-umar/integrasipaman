@@ -38,6 +38,32 @@ class PluginIntegrasipamanConfig extends CommonDBTM
      *
      * @var array<string, string>
      */
+    /**
+     * Seed values for the risk-evaluation config textareas (one entry per
+     * line). Ported verbatim from jumpserver_monthly_audit.py's
+     * RISK_KEYWORDS, and from ADMIN_USERS.txt / IP_PRODUCTION.txt in the
+     * same "AUTO ANALISA PAM" folder. Admins edit these freely afterward.
+     */
+    private const SEED_RISK_KEYWORDS =
+        "passwd\nuseradd\nuserdel\nusermod\ngroupadd\ngroupdel\ngpasswd\n"
+      . "sudo\nsu \nvisudo\nchmod 777\nchown\nsystemctl\nservice\n"
+      . "journalctl\nshutdown\nreboot\nrm -rf\nmkfs\nfdisk\nparted\n"
+      . "dd if=\niptables\nfirewall-cmd\nroute\nip route\nchage\n"
+      . "net user\nnet localgroup\nnet group\nsc stop\nsc config\n"
+      . "iisreset\ngpupdate\ngpresult\nauditpol\nformat\ndiskpart\n"
+      . "del /f\nremove-item";
+
+    private const SEED_ADMIN_USERS =
+        "Sysadmin One(sysadmin.one-e)\nSysadmin Two(sysadmin.two)\n"
+      . "Sysadmin Three(sysadmin.three-e)\nSysadmin Four(sysadmin.four-e)\n"
+      . "Sysadmin Six(sysadmin.six)\nSysadmin Five(sysadmin.five-e)\nSysadmin Seven(sysadmin.seven-e)\n"
+      . "Sysadmin Eight(sysadmin.eight)\nSysadmin Nine(sysadmin.nine-e)\nSysadmin Ten(sysadmin.ten-e)\n"
+      . "Sysadmin Eleven(sysadmin.eleven-e)\nSysadmin Twelve(sysadmin.twelve-e)\n"
+      . "Sysadmin Thirteen(sysadmin.thirteen-e)\nSysadmin Fourteen(sysadmin.fourteen-e)\n"
+      . "Sysadmin Fifteen(sysadmin.fifteen-e)";
+
+    private const SEED_PROD_PREFIXES = "10.0.0.\n10.0.1.";
+
     public const CONFIG_DEFAULTS = [
         'jumpserver_url'               => '',
         'jumpserver_access_key_id'     => '',
@@ -60,6 +86,13 @@ class PluginIntegrasipamanConfig extends CommonDBTM
         'jumpserver_command_storage_id'        => '',
         'jumpserver_terminal_retention_months' => '13',
         'jumpserver_terminal_backfill_months'  => '13',
+        // Command risk evaluation (inc/riskeval.class.php + the
+        // evaluate_commands cron). One entry per line; blank lines and
+        // lines starting "#" are ignored on load. Piece 3 will replace the
+        // admin-user and prod-prefix lookups with GLPI-native sources.
+        'jumpserver_risk_keywords'           => self::SEED_RISK_KEYWORDS,
+        'jumpserver_admin_users'             => self::SEED_ADMIN_USERS,
+        'jumpserver_production_ip_prefixes'  => self::SEED_PROD_PREFIXES,
     ];
 
     public static function getTypeName($nb = 0)

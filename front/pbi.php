@@ -107,12 +107,6 @@ Html::header(
     'PluginIntegrasipamanDashboard'
 );
 
-include_once(__DIR__ . '/../inc/dashboard.class.php');
-
-// Card overview strip (plugin's own event-log aggregates) above the
-// PBI-database detail tables - see PluginIntegrasipamanDashboard::renderOverview().
-PluginIntegrasipamanDashboard::renderOverview();
-
 $config = array_merge(
     PluginIntegrasipamanConfig::CONFIG_DEFAULTS,
     Config::getConfigurationValues(PluginIntegrasipamanConfig::CONFIG_CONTEXT)

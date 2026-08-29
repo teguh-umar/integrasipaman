@@ -54,6 +54,15 @@ if (isset($_POST['update'])) {
         Html::back();
     }
 
+    if ($jumpserver_access_key_id === '' || $jumpserver_access_key_secret === '' || $jumpserver_org_id === '') {
+        Session::addMessageAfterRedirect(
+            __('Access Key ID, Access Key Secret and Organization ID are all required.', 'integrasipaman'),
+            false,
+            ERROR
+        );
+        Html::back();
+    }
+
     Config::setConfigurationValues(PluginIntegrasipamanConfig::CONFIG_CONTEXT, [
         'jumpserver_url'               => $jumpserver_url,
         'jumpserver_access_key_id'     => $jumpserver_access_key_id,

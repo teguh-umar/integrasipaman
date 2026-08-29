@@ -135,9 +135,10 @@ class PluginIntegrasipamanConfig extends CommonDBTM
         echo '<div class="mb-3">';
         echo '<label class="form-label" for="jumpserver_access_key_id">' . __('Access Key ID') . '</label>';
         echo Html::input('jumpserver_access_key_id', [
-            'id'    => 'jumpserver_access_key_id',
-            'class' => 'form-control',
-            'value' => $config_values['jumpserver_access_key_id'],
+            'id'       => 'jumpserver_access_key_id',
+            'class'    => 'form-control',
+            'value'    => $config_values['jumpserver_access_key_id'],
+            'required' => 'required',
         ]);
         echo '</div>';
 
@@ -153,15 +154,17 @@ class PluginIntegrasipamanConfig extends CommonDBTM
             // load - invisible since the field masks its contents, and only
             // noticed later when JumpServer starts rejecting the signature.
             'autocomplete' => 'new-password',
+            'required'     => 'required',
         ]);
         echo '</div>';
 
         echo '<div class="mb-3">';
         echo '<label class="form-label" for="jumpserver_org_id">' . __('Organization ID') . '</label>';
         echo Html::input('jumpserver_org_id', [
-            'id'    => 'jumpserver_org_id',
-            'class' => 'form-control',
-            'value' => $config_values['jumpserver_org_id'],
+            'id'       => 'jumpserver_org_id',
+            'class'    => 'form-control',
+            'value'    => $config_values['jumpserver_org_id'],
+            'required' => 'required',
         ]);
         echo '</div>';
 

@@ -215,12 +215,13 @@ function plugin_integrasipaman_install(): bool
     // Seed default (empty) configuration values on first install only, so
     // Config::getConfigurationValues() always returns predictable keys.
     $existing_config = Config::getConfigurationValues(PluginIntegrasipamanConfig::CONFIG_CONTEXT);
+    $missing_config  = array_diff_key(PluginIntegrasipamanConfig::CONFIG_DEFAULTS, $existing_config);
 
-    if (empty($existing_config)) {
-        Config::setConfigurationValues(
-            PluginIntegrasipamanConfig::CONFIG_CONTEXT,
-            PluginIntegrasipamanConfig::CONFIG_DEFAULTS
-        );
+    if ($missing_config !== []) {
+        // Seeds every default on a fresh install, and tops up only the
+        // newly-added keys on an upgrade (e.g. the terminal-audit keys),
+        // without overwriting anything the admin has already set.
+        Config::setConfigurationValues(PluginIntegrasipamanConfig::CONFIG_CONTEXT, $missing_config);
     }
 
     return true;

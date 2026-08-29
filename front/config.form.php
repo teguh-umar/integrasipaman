@@ -41,6 +41,9 @@ if (isset($_POST['update'])) {
     $jumpserver_pbi_db_name       = trim($_POST['jumpserver_pbi_db_name'] ?? '');
     $jumpserver_pbi_db_user       = trim($_POST['jumpserver_pbi_db_user'] ?? '');
     $jumpserver_pbi_db_password   = trim($_POST['jumpserver_pbi_db_password'] ?? '');
+    $jumpserver_command_storage_id        = trim($_POST['jumpserver_command_storage_id'] ?? '');
+    $jumpserver_terminal_retention_months = (string) PluginIntegrasipamanConfig::clampMonths($_POST['jumpserver_terminal_retention_months'] ?? '13');
+    $jumpserver_terminal_backfill_months  = (string) PluginIntegrasipamanConfig::clampMonths($_POST['jumpserver_terminal_backfill_months'] ?? '13');
 
     if ($jumpserver_url !== '' && filter_var($jumpserver_url, FILTER_VALIDATE_URL) === false) {
         Session::addMessageAfterRedirect(
@@ -61,6 +64,9 @@ if (isset($_POST['update'])) {
         'jumpserver_pbi_db_name'       => $jumpserver_pbi_db_name,
         'jumpserver_pbi_db_user'       => $jumpserver_pbi_db_user,
         'jumpserver_pbi_db_password'   => $jumpserver_pbi_db_password,
+        'jumpserver_command_storage_id'        => $jumpserver_command_storage_id,
+        'jumpserver_terminal_retention_months' => $jumpserver_terminal_retention_months,
+        'jumpserver_terminal_backfill_months'  => $jumpserver_terminal_backfill_months,
     ]);
 
     Session::addMessageAfterRedirect(__('Configuration successfully updated.'));

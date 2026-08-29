@@ -254,7 +254,7 @@ class PluginIntegrasipamanTerminalPull extends CommonDBTM
                 self::TERMINAL_PAGE_SIZE,
                 self::TERMINAL_MAX_PAGES
             );
-            $result['commands'] = $acc + ['ok' => true, 'complete' => $complete];
+            $result['commands'] = $acc + ['ok' => !($complete === false && $acc['fetched'] === 0), 'complete' => $complete];
         }
 
         // --- Sessions -------------------------------------------------
@@ -278,7 +278,7 @@ class PluginIntegrasipamanTerminalPull extends CommonDBTM
             self::TERMINAL_PAGE_SIZE,
             self::TERMINAL_MAX_PAGES
         );
-        $result['sessions'] = $acc + ['ok' => true, 'complete' => $complete];
+        $result['sessions'] = $acc + ['ok' => !($complete === false && $acc['fetched'] === 0), 'complete' => $complete];
 
         return $result;
     }

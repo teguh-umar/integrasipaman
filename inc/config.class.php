@@ -38,6 +38,32 @@ class PluginIntegrasipamanConfig extends CommonDBTM
      *
      * @var array<string, string>
      */
+    /**
+     * Seed values for the risk-evaluation config textareas (one entry per
+     * line). Ported verbatim from jumpserver_monthly_audit.py's
+     * RISK_KEYWORDS, and from ADMIN_USERS.txt / IP_PRODUCTION.txt in the
+     * same "AUTO ANALISA PAM" folder. Admins edit these freely afterward.
+     */
+    private const SEED_RISK_KEYWORDS =
+        "passwd\nuseradd\nuserdel\nusermod\ngroupadd\ngroupdel\ngpasswd\n"
+      . "sudo\nsu \nvisudo\nchmod 777\nchown\nsystemctl\nservice\n"
+      . "journalctl\nshutdown\nreboot\nrm -rf\nmkfs\nfdisk\nparted\n"
+      . "dd if=\niptables\nfirewall-cmd\nroute\nip route\nchage\n"
+      . "net user\nnet localgroup\nnet group\nsc stop\nsc config\n"
+      . "iisreset\ngpupdate\ngpresult\nauditpol\nformat\ndiskpart\n"
+      . "del /f\nremove-item";
+
+    private const SEED_ADMIN_USERS =
+        "Sysadmin One(sysadmin.one-e)\nSysadmin Two(sysadmin.two)\n"
+      . "Sysadmin Three(sysadmin.three-e)\nSysadmin Four(sysadmin.four-e)\n"
+      . "Sysadmin Six(sysadmin.six)\nSysadmin Five(sysadmin.five-e)\nSysadmin Seven(sysadmin.seven-e)\n"
+      . "Sysadmin Eight(sysadmin.eight)\nSysadmin Nine(sysadmin.nine-e)\nSysadmin Ten(sysadmin.ten-e)\n"
+      . "Sysadmin Eleven(sysadmin.eleven-e)\nSysadmin Twelve(sysadmin.twelve-e)\n"
+      . "Sysadmin Thirteen(sysadmin.thirteen-e)\nSysadmin Fourteen(sysadmin.fourteen-e)\n"
+      . "Sysadmin Fifteen(sysadmin.fifteen-e)";
+
+    private const SEED_PROD_PREFIXES = "10.0.0.\n10.0.1.";
+
     public const CONFIG_DEFAULTS = [
         'jumpserver_url'               => '',
         'jumpserver_access_key_id'     => '',
@@ -60,6 +86,13 @@ class PluginIntegrasipamanConfig extends CommonDBTM
         'jumpserver_command_storage_id'        => '',
         'jumpserver_terminal_retention_months' => '13',
         'jumpserver_terminal_backfill_months'  => '13',
+        // Command risk evaluation (inc/riskeval.class.php + the
+        // evaluate_commands cron). One entry per line; blank lines and
+        // lines starting "#" are ignored on load. Piece 3 will replace the
+        // admin-user and prod-prefix lookups with GLPI-native sources.
+        'jumpserver_risk_keywords'           => self::SEED_RISK_KEYWORDS,
+        'jumpserver_admin_users'             => self::SEED_ADMIN_USERS,
+        'jumpserver_production_ip_prefixes'  => self::SEED_PROD_PREFIXES,
     ];
 
     public static function getTypeName($nb = 0)
@@ -259,10 +292,37 @@ class PluginIntegrasipamanConfig extends CommonDBTM
         echo '<small class="form-hint">' . __('How many months of history the first cron run pulls. Default 13.', 'integrasipaman') . '</small>';
         echo '</div>';
 
+        echo '<hr class="my-4">';
+        echo '<h4>' . __('Command Risk Evaluation', 'integrasipaman') . '</h4>';
+        echo '<p class="text-muted">' . __('Rules for classifying terminal commands (cron "Classify JumpServer command records", every 15 min). One entry per line; blank lines and lines starting with # are ignored. Editing any list re-evaluates all history automatically.', 'integrasipaman') . '</p>';
+
+        foreach ([
+            'jumpserver_risk_keywords'          => [__('High-risk keywords', 'integrasipaman'), __('A command containing any of these (or JumpServer risk level >= 4) is flagged high-risk.', 'integrasipaman'), 8],
+            'jumpserver_admin_users'            => [__('Admin users', 'integrasipaman'), __('Format: Full Name(login) - exactly as shown in the command "User" column. High-risk actions by these users on production assets are MEDIUM, not HIGH.', 'integrasipaman'), 6],
+            'jumpserver_production_ip_prefixes' => [__('Production IP prefixes', 'integrasipaman'), __('An asset whose IP starts with one of these is "production". e.g. 10.0.0.', 'integrasipaman'), 3],
+        ] as $key => [$label, $hint, $rows]) {
+            echo '<div class="mb-3">';
+            echo '<label class="form-label" for="' . $key . '">' . htmlescape($label) . '</label>';
+            echo '<textarea class="form-control" id="' . $key . '" name="' . $key . '" rows="' . (int) $rows . '">'
+                . htmlescape($config_values[$key]) . '</textarea>';
+            echo '<small class="form-hint">' . htmlescape($hint) . '</small>';
+            echo '</div>';
+        }
+
         echo '<div class="mb-3">';
         echo Html::submit(__('Save'), ['name' => 'update_btn', 'class' => 'btn btn-primary']);
         echo '</div>';
 
+        Html::closeForm();
+
+        // Separate, non-nested POST form for the "Re-evaluate now" trigger.
+        // Html::closeForm() emits the _glpi_csrf_token hidden field that
+        // GLPI's Kernel-level CheckCsrfListener validates for the POST.
+        echo '<form method="post" action="' . Plugin::getWebDir('integrasipaman') . '/front/reeval.php">';
+        echo '<div class="mb-3">';
+        echo Html::submit(__('Re-evaluate now', 'integrasipaman'), ['name' => 'reeval', 'class' => 'btn btn-outline-secondary']);
+        echo '<small class="form-hint d-block">' . htmlescape(__('Save first if you changed a list above. Runs for up to ~20 seconds; the cron finishes anything left.', 'integrasipaman')) . '</small>';
+        echo '</div>';
         Html::closeForm();
 
         echo '</div>'; // card-body

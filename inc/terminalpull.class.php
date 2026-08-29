@@ -419,6 +419,18 @@ class PluginIntegrasipamanTerminalPull extends CommonDBTM
         // 3 Mar), deleting a few days from inside the retention window.
         $cutoff = date('Y-m-01 00:00:00', strtotime("first day of -{$months} months"));
 
+        // Delete eval rows for the command rows about to be pruned. The
+        // FK ON DELETE CASCADE covers this when the constraint exists, but
+        // some GLPI schema tooling strips FKs (see hook.php's table
+        // creation), so do it explicitly too - a JOIN-delete on the same
+        // cutoff, cheap because it hits exactly the rows being removed.
+        $DB->doQuery(
+            'DELETE e FROM `glpi_plugin_jumpserver_command_eval` e'
+          . ' JOIN `glpi_plugin_jumpserver_commands` c ON e.`commands_id` = c.`id`'
+          . ' WHERE c.`executed_at` < ' . $DB->quote($cutoff)
+          . ' OR (c.`executed_at` IS NULL AND c.`date_creation` < ' . $DB->quote($cutoff) . ')'
+        );
+
         // Two deletes per table rather than a nested OR/AND criterion (the
         // GLPI query builder form the fix brief proposed) - simpler and
         // guaranteed to build.

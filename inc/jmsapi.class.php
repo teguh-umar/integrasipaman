@@ -28,8 +28,14 @@ class PluginIntegrasipamanJmsApi
 
     /**
      * Fetch every page of a JumpServer list endpoint and return the
-     * concatenated entries. See the original docblock in cron.class.php
-     * for the signing/pagination rationale.
+     * concatenated entries.
+     *
+     * Each request is signed with JumpServer's Access Key HTTP Signature
+     * scheme (HMAC-SHA256 over request-target/accept/date/x-jms-org, see
+     * signedGetPage()); pages are followed via DRF's "next" link until it is
+     * null or $max_pages is reached. Buffers the whole result in memory - fine
+     * for the low-volume audit-log crons; the high-volume terminal pull uses
+     * signedGetEach() instead.
      *
      * @return array<int, mixed>|null All entries, or null on a first-page failure.
      */
@@ -67,6 +73,76 @@ class PluginIntegrasipamanJmsApi
         return $entries;
     }
 
+    /**
+     * Like signedGet(), but hands each page of entries to $on_page and
+     * discards it before fetching the next - bounded memory regardless of
+     * how many rows the window holds. Used by the high-volume terminal
+     * pull; signedGet() stays for the low-volume audit-log cron.
+     *
+     * @param callable(array<int,mixed>):void $on_page Receives one page's "results" list.
+     * @return bool  true if pagination ran to completion; false if it was
+     *               cut short by a page failure or by hitting $max_pages
+     *               (i.e. the window may be incompletely fetched).
+     */
+    public static function signedGetEach(
+        string $api_path,
+        string $base_url,
+        string $access_key_id,
+        string $access_key_secret,
+        string $org_id,
+        callable $on_page,
+        int $page_size = self::PAGE_SIZE,
+        int $max_pages = self::MAX_PAGES
+    ): bool {
+        $path   = self::appendLimit($api_path, $page_size);
+        $offset = 0;
+
+        for ($page = 0; $page < $max_pages && $path !== null; $page++) {
+            $body = self::signedGetPage($path, $base_url, $access_key_id, $access_key_secret, $org_id);
+
+            if ($body === null) {
+                return false; // page failure mid-window
+            }
+
+            $results = $body['results'] ?? $body;
+            $count   = is_array($results) ? count($results) : 0;
+
+            if (is_array($results) && $count > 0) {
+                $on_page($results);
+            }
+
+            $next = $body['next'] ?? null;
+
+            if (is_string($next) && $next !== '') {
+                $path = self::nextPath($next);
+            } elseif ($count === $page_size) {
+                // Some JumpServer command-storage backends (ES-backed) omit
+                // "next"; the reference script drives offset manually and
+                // stops on an empty page. Mirror that as a fallback.
+                $offset += $page_size;
+                $path = self::withOffset(self::appendLimit($api_path, $page_size), $offset);
+            } else {
+                $path = null; // short page => last page
+            }
+        }
+
+        return $path === null; // null => finished; non-null => hit max_pages
+    }
+
+    /** Replace/add an offset= param on a path that already has a query string. */
+    private static function withOffset(string $api_path, int $offset): string
+    {
+        $api_path = preg_replace('/([?&])offset=\d+/', '$1offset=' . $offset, $api_path, 1, $replaced);
+        if ($replaced) {
+            return $api_path;
+        }
+        return $api_path . '&offset=' . $offset;
+    }
+
+    /**
+     * Append "limit={page_size}" to a path unless it already carries a
+     * limit= param. First page of every paginated pull.
+     */
     private static function appendLimit(string $api_path, int $page_size): string
     {
         if (strpos($api_path, 'limit=') !== false) {
@@ -78,6 +154,10 @@ class PluginIntegrasipamanJmsApi
         return $api_path . $separator . 'limit=' . $page_size;
     }
 
+    /**
+     * Reduce a DRF absolute "next" URL to the path+query this signer needs
+     * (the signature covers the request-target only). Null if unparseable.
+     */
     private static function nextPath(string $next_url): ?string
     {
         $parts = parse_url($next_url);

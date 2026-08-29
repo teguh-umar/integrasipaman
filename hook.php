@@ -112,8 +112,9 @@ function plugin_integrasipaman_install(): bool
 
         // Lean copy of JumpServer terminal command records (no command
         // "output" - see the Piece 1 design doc). `jms_id` is JumpServer's
-        // own command id, used only for dedup on re-pull; a plain KEY (not
-        // UNIQUE) for the same reason as glpi_plugin_jumpserver_logs.source_id.
+        // own command id; UNIQUE so a concurrent cron + backfill-page run
+        // for the same month cannot double-insert (insertDedup's app-level
+        // check can still lose the race).
         $query = "CREATE TABLE `$commands_table` (
             `id` INT {$default_key_sign} NOT NULL AUTO_INCREMENT,
             `jms_id` VARCHAR(64) NOT NULL DEFAULT '',
@@ -128,7 +129,7 @@ function plugin_integrasipaman_install(): bool
             `remote_addr` VARCHAR(45) NOT NULL DEFAULT '',
             `date_creation` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (`id`),
-            KEY `jms_id` (`jms_id`),
+            UNIQUE KEY `jms_id` (`jms_id`),
             KEY `executed_at` (`executed_at`),
             KEY `asset` (`asset`)
         ) ENGINE=InnoDB DEFAULT CHARSET={$default_charset} COLLATE={$default_collation}";
@@ -150,7 +151,8 @@ function plugin_integrasipaman_install(): bool
         $default_key_sign  = DBConnection::getDefaultPrimaryKeySignOption();
 
         // One row per JumpServer terminal session. `jms_id` = JumpServer
-        // session id, dedup key, plain KEY.
+        // session id, dedup key; UNIQUE for the same race reason as the
+        // commands table above.
         $query = "CREATE TABLE `$sessions_table` (
             `id` INT {$default_key_sign} NOT NULL AUTO_INCREMENT,
             `jms_id` VARCHAR(64) NOT NULL DEFAULT '',
@@ -172,7 +174,7 @@ function plugin_integrasipaman_install(): bool
             `terminal_name` VARCHAR(128) NOT NULL DEFAULT '',
             `date_creation` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (`id`),
-            KEY `jms_id` (`jms_id`),
+            UNIQUE KEY `jms_id` (`jms_id`),
             KEY `date_start` (`date_start`),
             KEY `asset` (`asset`)
         ) ENGINE=InnoDB DEFAULT CHARSET={$default_charset} COLLATE={$default_collation}";
@@ -212,8 +214,8 @@ function plugin_integrasipaman_install(): bool
 
     include_once(__DIR__ . '/inc/config.class.php');
 
-    // Seed default (empty) configuration values on first install only, so
-    // Config::getConfigurationValues() always returns predictable keys.
+    // Seed defaults on a fresh install; on upgrade, add only keys absent
+    // from the stored config (never overwrite an admin's value).
     $existing_config = Config::getConfigurationValues(PluginIntegrasipamanConfig::CONFIG_CONTEXT);
     $missing_config  = array_diff_key(PluginIntegrasipamanConfig::CONFIG_DEFAULTS, $existing_config);
 

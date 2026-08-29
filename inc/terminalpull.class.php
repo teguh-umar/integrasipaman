@@ -55,7 +55,9 @@ class PluginIntegrasipamanTerminalPull extends CommonDBTM
             'jms_user'       => mb_substr((string) ($e['user'] ?? ''), 0, 191),
             'asset'          => mb_substr((string) ($e['asset'] ?? ''), 0, 191),
             'account'        => mb_substr((string) ($e['account'] ?? ''), 0, 191),
-            'command'        => (string) ($e['input'] ?? ''),
+            // `command` is TEXT (65535 bytes) - truncate an over-long pasted
+            // script rather than fail the INSERT under STRICT_TRANS_TABLES.
+            'command'        => mb_strcut((string) ($e['input'] ?? ''), 0, 65535),
             'risk_level'     => (int) ($e['risk_level']['value'] ?? 0),
             'risk_label'     => mb_substr((string) ($e['risk_level']['label'] ?? ''), 0, 32),
             'session_jms_id' => mb_substr((string) ($e['session'] ?? ''), 0, 64),
@@ -96,11 +98,11 @@ class PluginIntegrasipamanTerminalPull extends CommonDBTM
     /**
      * Insert mapped rows into $table, skipping any whose $id_col value is
      * already present. The existence check is one "WHERE jms_id IN (...)"
-     * for the whole batch, not one query per row - a month can be 150k
-     * commands.
+     * per call, not one query per row. Callers pass one page at a time
+     * (<= TERMINAL_PAGE_SIZE rows) so the IN(...) list stays bounded.
      *
      * @param array<int, array<string, mixed>> $rows Mapped rows (must contain $id_col).
-     * @return array{inserted: int, skipped: int}
+     * @return array{inserted: int, skipped: int, empty_id: int}
      */
     private static function insertDedup(string $table, string $id_col, array $rows): array
     {
@@ -156,6 +158,11 @@ class PluginIntegrasipamanTerminalPull extends CommonDBTM
 
             if ($DB->insert($table, $row)) {
                 $inserted++;
+            } elseif (str_contains((string) $DB->error(), 'Duplicate entry')) {
+                // Lost a dedup race against a concurrent cron + backfill-page
+                // run for the same month (UNIQUE KEY jms_id). Count as skipped,
+                // not a failure.
+                $skipped++;
             } else {
                 trigger_error(
                     sprintf('Failed to insert into %s: %s', $table, $DB->error()),
@@ -171,7 +178,7 @@ class PluginIntegrasipamanTerminalPull extends CommonDBTM
             );
         }
 
-        return ['inserted' => $inserted, 'skipped' => $skipped];
+        return ['inserted' => $inserted, 'skipped' => $skipped, 'empty_id' => $empty_id];
     }
 
     /**
@@ -192,12 +199,19 @@ class PluginIntegrasipamanTerminalPull extends CommonDBTM
 
     /**
      * Pull every command and session for one calendar month, dedup-insert
-     * both, and return per-endpoint counts. Reads its own config.
+     * both, and return per-endpoint counts. Reads its own config. Each page
+     * is mapped + dedup-inserted and then discarded (signedGetEach) so peak
+     * memory stays bounded no matter how big the month is.
      *
-     * @return array{commands: array{fetched:int,inserted:int,skipped:int,ok:bool}, sessions: array{fetched:int,inserted:int,skipped:int,ok:bool}}
+     * @throws InvalidArgumentException on a malformed $ym
+     * @return array{commands: array{fetched:int,inserted:int,skipped:int,empty_id:int,null_date:int,ok:bool,complete:bool}, sessions: array{fetched:int,inserted:int,skipped:int,empty_id:int,null_date:int,ok:bool,complete:bool}}
      */
     public static function pullMonth(string $ym): array
     {
+        if (!preg_match('/^\d{4}-(0[1-9]|1[0-2])$/', $ym)) {
+            throw new InvalidArgumentException('Month must be YYYY-MM');
+        }
+
         $config            = Config::getConfigurationValues(PluginIntegrasipamanConfig::CONFIG_CONTEXT);
         $base_url          = trim($config['jumpserver_url'] ?? '');
         $access_key_id     = trim($config['jumpserver_access_key_id'] ?? '');
@@ -205,7 +219,7 @@ class PluginIntegrasipamanTerminalPull extends CommonDBTM
         $org_id            = trim($config['jumpserver_org_id'] ?? '');
         $storage_id        = trim($config['jumpserver_command_storage_id'] ?? '');
 
-        $blank = ['fetched' => 0, 'inserted' => 0, 'skipped' => 0, 'ok' => false];
+        $blank  = ['fetched' => 0, 'inserted' => 0, 'skipped' => 0, 'empty_id' => 0, 'null_date' => 0, 'ok' => false, 'complete' => false];
         $result = ['commands' => $blank, 'sessions' => $blank];
 
         if ($base_url === '' || $access_key_id === '' || $access_key_secret === '') {
@@ -215,84 +229,70 @@ class PluginIntegrasipamanTerminalPull extends CommonDBTM
 
         [$date_from, $date_to] = self::monthBounds($ym);
 
-        // --- Commands ---------------------------------------------------
+        // --- Commands --------------------------------------------------
         if ($storage_id === '') {
             trigger_error('jumpserver_command_storage_id not configured; command pull skipped.', E_USER_WARNING);
         } else {
+            $acc = ['fetched' => 0, 'inserted' => 0, 'skipped' => 0, 'empty_id' => 0, 'null_date' => 0];
             $cmd_path = self::COMMANDS_PATH . '?' . http_build_query([
                 'command_storage_id' => $storage_id,
                 'date_from'          => $date_from,
                 'date_to'            => $date_to,
                 'order'              => '-timestamp',
             ]);
-            $entries = PluginIntegrasipamanJmsApi::signedGet(
-                $cmd_path,
-                $base_url,
-                $access_key_id,
-                $access_key_secret,
-                $org_id,
+            $complete = PluginIntegrasipamanJmsApi::signedGetEach(
+                $cmd_path, $base_url, $access_key_id, $access_key_secret, $org_id,
+                static function (array $page) use (&$acc): void {
+                    $rows = array_map([self::class, 'mapCommandEntry'], array_filter($page, 'is_array'));
+                    $acc['fetched']   += count($rows);
+                    $acc['null_date'] += count(array_filter($rows, static fn($r) => $r['executed_at'] === null));
+                    $c = self::insertDedup(self::COMMANDS_TABLE, 'jms_id', $rows);
+                    $acc['inserted'] += $c['inserted'];
+                    $acc['skipped']  += $c['skipped'];
+                    $acc['empty_id'] += $c['empty_id'];
+                },
                 self::TERMINAL_PAGE_SIZE,
                 self::TERMINAL_MAX_PAGES
             );
-
-            if ($entries === null) {
-                $result['commands'] = $blank; // ok stays false
-            } else {
-                $rows = array_map([self::class, 'mapCommandEntry'], array_filter($entries, 'is_array'));
-                $counts = self::insertDedup(self::COMMANDS_TABLE, 'jms_id', $rows);
-                $result['commands'] = [
-                    'fetched'  => count($rows),
-                    'inserted' => $counts['inserted'],
-                    'skipped'  => $counts['skipped'],
-                    'ok'       => true,
-                ];
-            }
+            $result['commands'] = $acc + ['ok' => true, 'complete' => $complete];
         }
 
-        // --- Sessions --------------------------------------------------
+        // --- Sessions -------------------------------------------------
+        $acc = ['fetched' => 0, 'inserted' => 0, 'skipped' => 0, 'empty_id' => 0, 'null_date' => 0];
         $sess_path = self::SESSIONS_PATH . '?' . http_build_query([
             'date_from' => $date_from,
             'date_to'   => $date_to,
             'order'     => '-date_start',
         ]);
-        $entries = PluginIntegrasipamanJmsApi::signedGet(
-            $sess_path,
-            $base_url,
-            $access_key_id,
-            $access_key_secret,
-            $org_id,
+        $complete = PluginIntegrasipamanJmsApi::signedGetEach(
+            $sess_path, $base_url, $access_key_id, $access_key_secret, $org_id,
+            static function (array $page) use (&$acc): void {
+                $rows = array_map([self::class, 'mapSessionEntry'], array_filter($page, 'is_array'));
+                $acc['fetched']   += count($rows);
+                $acc['null_date'] += count(array_filter($rows, static fn($r) => $r['date_start'] === null));
+                $c = self::insertDedup(self::SESSIONS_TABLE, 'jms_id', $rows);
+                $acc['inserted'] += $c['inserted'];
+                $acc['skipped']  += $c['skipped'];
+                $acc['empty_id'] += $c['empty_id'];
+            },
             self::TERMINAL_PAGE_SIZE,
             self::TERMINAL_MAX_PAGES
         );
-
-        if ($entries !== null) {
-            $rows = array_map([self::class, 'mapSessionEntry'], array_filter($entries, 'is_array'));
-            $counts = self::insertDedup(self::SESSIONS_TABLE, 'jms_id', $rows);
-            $result['sessions'] = [
-                'fetched'  => count($rows),
-                'inserted' => $counts['inserted'],
-                'skipped'  => $counts['skipped'],
-                'ok'       => true,
-            ];
-        }
+        $result['sessions'] = $acc + ['ok' => true, 'complete' => $complete];
 
         return $result;
     }
 
     /**
-     * Public entry for a single-month pull (front/backfill.php). Validates
-     * the month string; the caller is responsible for higher-level checks
-     * (not in the future, within retention).
+     * Public entry for a single-month pull (front/backfill.php). Month-string
+     * validation now lives in pullMonth(); the caller is responsible for
+     * higher-level checks (not in the future, within retention).
      *
      * @throws InvalidArgumentException on a malformed $ym
      * @return array same shape as pullMonth()
      */
     public static function backfillMonth(string $ym): array
     {
-        if (!preg_match('/^\d{4}-(0[1-9]|1[0-2])$/', $ym)) {
-            throw new InvalidArgumentException('Month must be YYYY-MM');
-        }
-
         return self::pullMonth($ym);
     }
 
@@ -310,40 +310,71 @@ class PluginIntegrasipamanTerminalPull extends CommonDBTM
     }
 
     /**
-     * The list of "YYYY-MM" months a cron run should (re-)pull.
-     *
-     * First run (both tables empty): the last $backfill_months calendar
-     * months, oldest first. Every later run: last month + this month, so a
-     * daily run keeps re-scanning the previous month until it rolls off -
-     * catching command records JumpServer flushed late. jms_id dedup makes
-     * the re-scan cheap.
+     * Months a run should (re-)pull: every month in the backfill window
+     * that has no rows yet (self-healing across runs if an earlier run
+     * died partway), plus previous + current month every time (to catch
+     * late-flushed records). Oldest first. jms_id dedup makes re-scans cheap.
      *
      * @return array<int, string>
      */
     private static function monthsToPull(int $backfill_months): array
     {
-        global $DB;
+        $months = [];
 
-        $has_data = $DB->request(['FROM' => self::COMMANDS_TABLE, 'COUNT' => 'c'])->current()['c'] > 0
-            || $DB->request(['FROM' => self::SESSIONS_TABLE, 'COUNT' => 'c'])->current()['c'] > 0;
-
-        if (!$has_data) {
-            $months = [];
-            for ($i = $backfill_months - 1; $i >= 0; $i--) {
-                $months[] = date('Y-m', strtotime("first day of -{$i} months"));
+        // Loop stops at 2 because prev(1) and current(0) are always appended.
+        for ($i = $backfill_months - 1; $i >= 2; $i--) {
+            $ym = date('Y-m', strtotime("first day of -{$i} months"));
+            if (!self::monthHasData($ym)) {
+                $months[] = $ym;
             }
-            return $months;
         }
 
-        return [
-            date('Y-m', strtotime('first day of -1 month')),
-            date('Y-m'),
-        ];
+        $months[] = date('Y-m', strtotime('first day of -1 month'));
+        $months[] = date('Y-m');
+
+        return $months;
+    }
+
+    /** True if either table already holds a row inside this YYYY-MM. */
+    private static function monthHasData(string $ym): bool
+    {
+        global $DB;
+
+        [$y, $m] = array_map('intval', explode('-', $ym));
+        $start   = sprintf('%04d-%02d-01 00:00:00', $y, $m);
+        $last    = (int) date('t', mktime(0, 0, 0, $m, 1, $y));
+        $end     = sprintf('%04d-%02d-%02d 23:59:59', $y, $m, $last);
+
+        $cmd = $DB->request([
+            'COUNT' => 'c',
+            'FROM'  => self::COMMANDS_TABLE,
+            'WHERE' => [
+                ['executed_at' => ['>=', $start]],
+                ['executed_at' => ['<=', $end]],
+            ],
+        ])->current()['c'] ?? 0;
+
+        if ($cmd > 0) {
+            return true;
+        }
+
+        $sess = $DB->request([
+            'COUNT' => 'c',
+            'FROM'  => self::SESSIONS_TABLE,
+            'WHERE' => [
+                ['date_start' => ['>=', $start]],
+                ['date_start' => ['<=', $end]],
+            ],
+        ])->current()['c'] ?? 0;
+
+        return $sess > 0;
     }
 
     /**
      * Delete command rows older than $months by executed_at and session
-     * rows older than $months by date_start.
+     * rows older than $months by date_start. Rows whose event date is NULL
+     * (API omitted the timestamp) are pruned on date_creation instead, so
+     * they cannot accumulate forever.
      *
      * @return array{commands: int, sessions: int} rows deleted
      */
@@ -351,13 +382,24 @@ class PluginIntegrasipamanTerminalPull extends CommonDBTM
     {
         global $DB;
 
-        $cutoff = date('Y-m-d H:i:s', strtotime("-{$months} months"));
+        // Clean month start, matching monthsToPull() / front/backfill.php's
+        // range floor - "-{$months} months" alone does day-preserving
+        // arithmetic that overflows past a month end (31 Mar - 1 month =>
+        // 3 Mar), deleting a few days from inside the retention window.
+        $cutoff = date('Y-m-01 00:00:00', strtotime("first day of -{$months} months"));
 
+        // Two deletes per table rather than a nested OR/AND criterion (the
+        // GLPI query builder form the fix brief proposed) - simpler and
+        // guaranteed to build.
         $DB->delete(self::COMMANDS_TABLE, ['executed_at' => ['<', $cutoff]]);
         $cmd = $DB->affectedRows();
+        $DB->delete(self::COMMANDS_TABLE, ['executed_at' => null, 'date_creation' => ['<', $cutoff]]);
+        $cmd += $DB->affectedRows();
 
         $DB->delete(self::SESSIONS_TABLE, ['date_start' => ['<', $cutoff]]);
         $sess = $DB->affectedRows();
+        $DB->delete(self::SESSIONS_TABLE, ['date_start' => null, 'date_creation' => ['<', $cutoff]]);
+        $sess += $DB->affectedRows();
 
         return ['commands' => $cmd, 'sessions' => $sess];
     }
@@ -375,11 +417,14 @@ class PluginIntegrasipamanTerminalPull extends CommonDBTM
         $retention = PluginIntegrasipamanConfig::clampMonths($config['jumpserver_terminal_retention_months'] ?? '13');
         $backfill  = PluginIntegrasipamanConfig::clampMonths($config['jumpserver_terminal_backfill_months'] ?? '13');
 
+        // Never pull a month we would delete minutes later in the same run.
+        $backfill = min($backfill, $retention);
+
         if (trim($config['jumpserver_url'] ?? '') === ''
             || trim($config['jumpserver_access_key_id'] ?? '') === ''
             || trim($config['jumpserver_access_key_secret'] ?? '') === ''
             || trim($config['jumpserver_command_storage_id'] ?? '') === '') {
-            $task->log('JumpServer URL / Access Key / Command Storage ID not configured. Skipping.');
+            $task->log('JumpServer URL / Access Key ID / Access Key Secret / Command Storage ID not configured. Skipping.');
             $task->setVolume(0);
             return 0;
         }
@@ -388,6 +433,7 @@ class PluginIntegrasipamanTerminalPull extends CommonDBTM
         $task->log(sprintf('Terminal pull: %d month(s) [%s].', count($months), implode(', ', $months)));
 
         $total_inserted = 0;
+        $total_skipped  = 0;
         $first_call_failed = null;
 
         foreach ($months as $ym) {
@@ -396,19 +442,18 @@ class PluginIntegrasipamanTerminalPull extends CommonDBTM
             foreach (['commands', 'sessions'] as $kind) {
                 $c = $r[$kind];
                 $total_inserted += $c['inserted'];
+                $total_skipped  += $c['skipped'];
 
                 if ($first_call_failed === null) {
                     $first_call_failed = !$c['ok'];
                 }
 
                 $task->log(sprintf(
-                    '  %s %s: %d fetched, %d inserted, %d skipped%s.',
-                    $ym,
-                    $kind,
-                    $c['fetched'],
-                    $c['inserted'],
-                    $c['skipped'],
-                    $c['ok'] ? '' : ' (FETCH FAILED)'
+                    '  %s %s: %d fetched, %d inserted, %d skipped, %d empty-id, %d null-date%s%s.',
+                    $ym, $kind, $c['fetched'], $c['inserted'], $c['skipped'],
+                    $c['empty_id'], $c['null_date'],
+                    $c['ok'] ? '' : ' (FETCH FAILED)',
+                    ($c['ok'] && !$c['complete']) ? ' (INCOMPLETE - re-run front/backfill.php?month=' . $ym . ')' : ''
                 ));
             }
         }
@@ -424,7 +469,8 @@ class PluginIntegrasipamanTerminalPull extends CommonDBTM
         $task->setVolume($total_inserted);
 
         // Hard failure only if the very first endpoint call failed and
-        // nothing at all was imported - same rule as pull_historical_logs.
-        return ($first_call_failed === true && $total_inserted === 0) ? 0 : 1;
+        // nothing at all was imported or skipped - same rule as
+        // PluginIntegrasipamanCron::cronPull_historical_logs.
+        return ($first_call_failed === true && $total_inserted === 0 && $total_skipped === 0) ? 0 : 1;
     }
 }

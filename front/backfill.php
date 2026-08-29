@@ -30,12 +30,16 @@ $month     = trim($_GET['month'] ?? '');
 $config    = Config::getConfigurationValues(PluginIntegrasipamanConfig::CONFIG_CONTEXT);
 $retention = PluginIntegrasipamanConfig::clampMonths($config['jumpserver_terminal_retention_months'] ?? '13');
 
-$oldest_allowed = date('Y-m', strtotime("first day of -{$retention} months"));
+// retention - 1 so the oldest offered month is not pruned by the very next
+// cron run (prune floor is "first day of -{retention} months").
+$oldest_allowed = date('Y-m', strtotime('first day of -' . max(0, $retention - 1) . ' months'));
 $newest_allowed = date('Y-m');
 
 $valid = preg_match('/^\d{4}-(0[1-9]|1[0-2])$/', $month)
     && $month >= $oldest_allowed
     && $month <= $newest_allowed;
+
+echo '<p><a href="' . htmlescape(Plugin::getWebDir('integrasipaman')) . '/front/config.form.php">' . htmlescape(__('Back to configuration', 'integrasipaman')) . '</a></p>';
 
 echo '<div class="card"><div class="card-body">';
 
@@ -61,6 +65,9 @@ if ($month === '') {
     echo '<table class="table"><thead><tr><th></th><th>' . htmlescape(__('Fetched', 'integrasipaman'))
         . '</th><th>' . htmlescape(__('Inserted', 'integrasipaman'))
         . '</th><th>' . htmlescape(__('Skipped', 'integrasipaman'))
+        . '</th><th>' . htmlescape(__('Empty-id', 'integrasipaman'))
+        . '</th><th>' . htmlescape(__('Null-date', 'integrasipaman'))
+        . '</th><th>' . htmlescape(__('Complete', 'integrasipaman'))
         . '</th><th>' . htmlescape(__('OK', 'integrasipaman')) . '</th></tr></thead><tbody>';
 
     foreach (['commands' => __('Commands', 'integrasipaman'), 'sessions' => __('Sessions', 'integrasipaman')] as $key => $label) {
@@ -69,6 +76,9 @@ if ($month === '') {
             . '<td>' . (int) $c['fetched'] . '</td>'
             . '<td>' . (int) $c['inserted'] . '</td>'
             . '<td>' . (int) $c['skipped'] . '</td>'
+            . '<td>' . (int) ($c['empty_id'] ?? 0) . '</td>'
+            . '<td>' . (int) ($c['null_date'] ?? 0) . '</td>'
+            . '<td>' . (!empty($c['complete']) ? '&#10003;' : '&#10007;') . '</td>'
             . '<td>' . ($c['ok'] ? '&#10003;' : '&#10007;') . '</td></tr>';
     }
 

@@ -53,7 +53,8 @@ function plugin_init_integrasipaman(): void
         Plugin::registerClass('PluginIntegrasipamanCron');
         Plugin::registerClass('PluginIntegrasipamanConfig');
         Plugin::registerClass('PluginIntegrasipamanDashboard');
-        Plugin::registerClass('PluginIntegrasipamanJmsApi');
+        // PluginIntegrasipamanJmsApi is a pure transport class, not a GLPI
+        // itemtype - it is loaded via require_once where used, not registered.
         Plugin::registerClass('PluginIntegrasipamanTerminalPull');
 
         // Expose a "Configure" link for this plugin under Setup > Plugins.

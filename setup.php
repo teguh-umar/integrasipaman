@@ -23,7 +23,7 @@
 // row in glpi_plugins. Confirmed by comparison against a working
 // reference plugin on the target instance, which has no such guard.
 
-define('PLUGIN_INTEGRASIPAMAN_VERSION', '1.8.0');
+define('PLUGIN_INTEGRASIPAMAN_VERSION', '1.9.0');
 
 // Minimum GLPI version, inclusive
 define('PLUGIN_INTEGRASIPAMAN_MIN_GLPI', '10.0.0');
@@ -53,6 +53,9 @@ function plugin_init_integrasipaman(): void
         Plugin::registerClass('PluginIntegrasipamanCron');
         Plugin::registerClass('PluginIntegrasipamanConfig');
         Plugin::registerClass('PluginIntegrasipamanDashboard');
+        // PluginIntegrasipamanJmsApi is a pure transport class, not a GLPI
+        // itemtype - it is loaded via require_once where used, not registered.
+        Plugin::registerClass('PluginIntegrasipamanTerminalPull');
 
         // Expose a "Configure" link for this plugin under Setup > Plugins.
         if (Session::haveRight('config', UPDATE)) {

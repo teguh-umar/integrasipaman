@@ -103,6 +103,91 @@ function plugin_integrasipaman_install(): bool
         }
     }
 
+    $commands_table = 'glpi_plugin_jumpserver_commands';
+
+    if (!$DB->tableExists($commands_table)) {
+        $default_charset   = DBConnection::getDefaultCharset();
+        $default_collation = DBConnection::getDefaultCollation();
+        $default_key_sign  = DBConnection::getDefaultPrimaryKeySignOption();
+
+        // Lean copy of JumpServer terminal command records (no command
+        // "output" - see the Piece 1 design doc). `jms_id` is JumpServer's
+        // own command id; UNIQUE so a concurrent cron + backfill-page run
+        // for the same month cannot double-insert (insertDedup's app-level
+        // check can still lose the race).
+        $query = "CREATE TABLE `$commands_table` (
+            `id` INT {$default_key_sign} NOT NULL AUTO_INCREMENT,
+            `jms_id` VARCHAR(64) NOT NULL DEFAULT '',
+            `executed_at` DATETIME NULL DEFAULT NULL,
+            `jms_user` VARCHAR(191) NOT NULL DEFAULT '',
+            `asset` VARCHAR(191) NOT NULL DEFAULT '',
+            `account` VARCHAR(191) NOT NULL DEFAULT '',
+            `command` TEXT NULL,
+            `risk_level` TINYINT NOT NULL DEFAULT 0,
+            `risk_label` VARCHAR(32) NOT NULL DEFAULT '',
+            `session_jms_id` VARCHAR(64) NOT NULL DEFAULT '',
+            `remote_addr` VARCHAR(45) NOT NULL DEFAULT '',
+            `date_creation` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (`id`),
+            UNIQUE KEY `jms_id` (`jms_id`),
+            KEY `executed_at` (`executed_at`),
+            KEY `asset` (`asset`)
+        ) ENGINE=InnoDB DEFAULT CHARSET={$default_charset} COLLATE={$default_collation}";
+
+        if (!$DB->doQuery($query)) {
+            trigger_error(
+                sprintf('Unable to create table %s: %s', $commands_table, $DB->error()),
+                E_USER_WARNING
+            );
+            return false;
+        }
+    }
+
+    $sessions_table = 'glpi_plugin_jumpserver_sessions';
+
+    if (!$DB->tableExists($sessions_table)) {
+        $default_charset   = DBConnection::getDefaultCharset();
+        $default_collation = DBConnection::getDefaultCollation();
+        $default_key_sign  = DBConnection::getDefaultPrimaryKeySignOption();
+
+        // One row per JumpServer terminal session. `jms_id` = JumpServer
+        // session id, dedup key; UNIQUE for the same race reason as the
+        // commands table above.
+        $query = "CREATE TABLE `$sessions_table` (
+            `id` INT {$default_key_sign} NOT NULL AUTO_INCREMENT,
+            `jms_id` VARCHAR(64) NOT NULL DEFAULT '',
+            `jms_user` VARCHAR(191) NOT NULL DEFAULT '',
+            `user_jms_id` VARCHAR(64) NOT NULL DEFAULT '',
+            `asset` VARCHAR(191) NOT NULL DEFAULT '',
+            `asset_jms_id` VARCHAR(64) NOT NULL DEFAULT '',
+            `account` VARCHAR(191) NOT NULL DEFAULT '',
+            `protocol` VARCHAR(32) NOT NULL DEFAULT '',
+            `login_from` VARCHAR(32) NOT NULL DEFAULT '',
+            `remote_addr` VARCHAR(45) NOT NULL DEFAULT '',
+            `duration` INT NOT NULL DEFAULT 0,
+            `command_amount` INT NOT NULL DEFAULT 0,
+            `is_success` TINYINT(1) NOT NULL DEFAULT 0,
+            `is_finished` TINYINT(1) NOT NULL DEFAULT 0,
+            `date_start` DATETIME NULL DEFAULT NULL,
+            `date_end` DATETIME NULL DEFAULT NULL,
+            `error_reason` VARCHAR(128) NOT NULL DEFAULT '',
+            `terminal_name` VARCHAR(128) NOT NULL DEFAULT '',
+            `date_creation` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (`id`),
+            UNIQUE KEY `jms_id` (`jms_id`),
+            KEY `date_start` (`date_start`),
+            KEY `asset` (`asset`)
+        ) ENGINE=InnoDB DEFAULT CHARSET={$default_charset} COLLATE={$default_collation}";
+
+        if (!$DB->doQuery($query)) {
+            trigger_error(
+                sprintf('Unable to create table %s: %s', $sessions_table, $DB->error()),
+                E_USER_WARNING
+            );
+            return false;
+        }
+    }
+
     include_once(__DIR__ . '/inc/cron.class.php');
 
     CronTask::Register(
@@ -115,17 +200,30 @@ function plugin_integrasipaman_install(): bool
         ]
     );
 
+    include_once(__DIR__ . '/inc/terminalpull.class.php');
+
+    CronTask::Register(
+        'PluginIntegrasipamanTerminalPull',
+        'pull_terminal_activity',
+        DAY_TIMESTAMP,
+        [
+            'comment' => 'Pull JumpServer terminal command & session records, then prune past the retention window',
+            'mode'    => CronTask::MODE_EXTERNAL,
+        ]
+    );
+
     include_once(__DIR__ . '/inc/config.class.php');
 
-    // Seed default (empty) configuration values on first install only, so
-    // Config::getConfigurationValues() always returns predictable keys.
+    // Seed defaults on a fresh install; on upgrade, add only keys absent
+    // from the stored config (never overwrite an admin's value).
     $existing_config = Config::getConfigurationValues(PluginIntegrasipamanConfig::CONFIG_CONTEXT);
+    $missing_config  = array_diff_key(PluginIntegrasipamanConfig::CONFIG_DEFAULTS, $existing_config);
 
-    if (empty($existing_config)) {
-        Config::setConfigurationValues(
-            PluginIntegrasipamanConfig::CONFIG_CONTEXT,
-            PluginIntegrasipamanConfig::CONFIG_DEFAULTS
-        );
+    if ($missing_config !== []) {
+        // Seeds every default on a fresh install, and tops up only the
+        // newly-added keys on an upgrade (e.g. the terminal-audit keys),
+        // without overwriting anything the admin has already set.
+        Config::setConfigurationValues(PluginIntegrasipamanConfig::CONFIG_CONTEXT, $missing_config);
     }
 
     return true;
@@ -142,21 +240,24 @@ function plugin_integrasipaman_uninstall(): bool
     include_once(__DIR__ . '/inc/config.class.php');
 
     CronTask::Unregister('PluginIntegrasipamanCron');
+    CronTask::Unregister('PluginIntegrasipamanTerminalPull');
 
     Config::deleteConfigurationValues(
         PluginIntegrasipamanConfig::CONFIG_CONTEXT,
         array_keys(PluginIntegrasipamanConfig::CONFIG_DEFAULTS)
     );
 
-    // The event table (glpi_plugin_jumpserver_logs) is deliberately NOT
-    // dropped on uninstall. Its rows are pulled from JumpServer's audit
-    // API and JumpServer rotates its own audit history out over time, so a
-    // drop-and-reinstall would permanently lose every event older than
-    // whatever JumpServer still retains at re-pull time. Keeping the table
-    // means a reinstall's first cron run (which requests full history -
-    // see PluginIntegrasipamanCron::computeStartDate()) only back-fills
-    // the gap, with source_id dedup skipping everything already stored.
-    // A real purge is a manual DROP TABLE, which is not this hook's job.
+    // The event tables (glpi_plugin_jumpserver_logs,
+    // glpi_plugin_jumpserver_commands, glpi_plugin_jumpserver_sessions) are
+    // deliberately NOT dropped on uninstall. Their rows are pulled from
+    // JumpServer's audit API and JumpServer rotates its own audit history
+    // out over time, so a drop-and-reinstall would permanently lose every
+    // event older than whatever JumpServer still retains at re-pull time.
+    // Keeping the tables means a reinstall's first cron run (which requests
+    // full history - see PluginIntegrasipamanCron::computeStartDate()) only
+    // back-fills the gap, with source_id/jms_id dedup skipping everything
+    // already stored. A real purge is a manual DROP TABLE, which is not
+    // this hook's job.
 
     return true;
 }

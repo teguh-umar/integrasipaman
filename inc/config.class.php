@@ -53,11 +53,34 @@ class PluginIntegrasipamanConfig extends CommonDBTM
         'jumpserver_pbi_db_name'       => 'jumpserver_pbi_views',
         'jumpserver_pbi_db_user'       => '',
         'jumpserver_pbi_db_password'   => '',
+        // Terminal command/session pull (inc/terminalpull.class.php +
+        // the pull_terminal_activity cron). command_storage_id is a
+        // required query param on /api/v1/terminal/commands/. The two
+        // *_months values are read through self::clampMonths().
+        'jumpserver_command_storage_id'        => '',
+        'jumpserver_terminal_retention_months' => '13',
+        'jumpserver_terminal_backfill_months'  => '13',
     ];
 
     public static function getTypeName($nb = 0)
     {
         return __('JumpServer Integration', 'integrasipaman');
+    }
+
+    /**
+     * Read a "months" setting defensively: a non-numeric or non-positive
+     * value falls back to $default; anything above $max is capped so a typo
+     * ("1300") can never trigger an unbounded backfill / retention window.
+     */
+    public static function clampMonths($raw, int $default = 13, int $max = 60): int
+    {
+        $n = (int) $raw;
+
+        if ($n < 1) {
+            return $default;
+        }
+
+        return min($n, $max);
     }
 
     /**
@@ -112,9 +135,10 @@ class PluginIntegrasipamanConfig extends CommonDBTM
         echo '<div class="mb-3">';
         echo '<label class="form-label" for="jumpserver_access_key_id">' . __('Access Key ID') . '</label>';
         echo Html::input('jumpserver_access_key_id', [
-            'id'    => 'jumpserver_access_key_id',
-            'class' => 'form-control',
-            'value' => $config_values['jumpserver_access_key_id'],
+            'id'       => 'jumpserver_access_key_id',
+            'class'    => 'form-control',
+            'value'    => $config_values['jumpserver_access_key_id'],
+            'required' => 'required',
         ]);
         echo '</div>';
 
@@ -130,15 +154,17 @@ class PluginIntegrasipamanConfig extends CommonDBTM
             // load - invisible since the field masks its contents, and only
             // noticed later when JumpServer starts rejecting the signature.
             'autocomplete' => 'new-password',
+            'required'     => 'required',
         ]);
         echo '</div>';
 
         echo '<div class="mb-3">';
         echo '<label class="form-label" for="jumpserver_org_id">' . __('Organization ID') . '</label>';
         echo Html::input('jumpserver_org_id', [
-            'id'    => 'jumpserver_org_id',
-            'class' => 'form-control',
-            'value' => $config_values['jumpserver_org_id'],
+            'id'       => 'jumpserver_org_id',
+            'class'    => 'form-control',
+            'value'    => $config_values['jumpserver_org_id'],
+            'required' => 'required',
         ]);
         echo '</div>';
 
@@ -191,6 +217,46 @@ class PluginIntegrasipamanConfig extends CommonDBTM
             'value'        => $config_values['jumpserver_pbi_db_password'],
             'autocomplete' => 'new-password',
         ]);
+        echo '</div>';
+
+        echo '<hr class="my-4">';
+        echo '<h4>' . __('Terminal Command Audit', 'integrasipaman') . '</h4>';
+        echo '<p class="text-muted">' . __('Pull of JumpServer terminal command & session records into GLPI (daily cron "Pull JumpServer terminal command & session records"). Feeds the command-audit reports.', 'integrasipaman') . '</p>';
+
+        echo '<div class="mb-3">';
+        echo '<label class="form-label" for="jumpserver_command_storage_id">' . __('Command Storage ID', 'integrasipaman') . '</label>';
+        echo Html::input('jumpserver_command_storage_id', [
+            'id'    => 'jumpserver_command_storage_id',
+            'class' => 'form-control',
+            'value' => $config_values['jumpserver_command_storage_id'],
+        ]);
+        echo '<small class="form-hint">' . __('Required. The command_storage_id from JumpServer (Console > Command Storage).', 'integrasipaman') . '</small>';
+        echo '</div>';
+
+        echo '<div class="mb-3">';
+        echo '<label class="form-label" for="jumpserver_terminal_retention_months">' . __('Retention (months)', 'integrasipaman') . '</label>';
+        echo Html::input('jumpserver_terminal_retention_months', [
+            'id'    => 'jumpserver_terminal_retention_months',
+            'type'  => 'number',
+            'min'   => '1',
+            'max'   => '60',
+            'class' => 'form-control',
+            'value' => $config_values['jumpserver_terminal_retention_months'],
+        ]);
+        echo '<small class="form-hint">' . __('Command & session rows older than this are deleted on each cron run. Default 13.', 'integrasipaman') . '</small>';
+        echo '</div>';
+
+        echo '<div class="mb-3">';
+        echo '<label class="form-label" for="jumpserver_terminal_backfill_months">' . __('First-run backfill (months)', 'integrasipaman') . '</label>';
+        echo Html::input('jumpserver_terminal_backfill_months', [
+            'id'    => 'jumpserver_terminal_backfill_months',
+            'type'  => 'number',
+            'min'   => '1',
+            'max'   => '60',
+            'class' => 'form-control',
+            'value' => $config_values['jumpserver_terminal_backfill_months'],
+        ]);
+        echo '<small class="form-hint">' . __('How many months of history the first cron run pulls. Default 13.', 'integrasipaman') . '</small>';
         echo '</div>';
 
         echo '<div class="mb-3">';

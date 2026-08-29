@@ -17,6 +17,8 @@ if (!defined('GLPI_ROOT')) {
     die('Sorry. You can not access this file directly');
 }
 
+require_once __DIR__ . '/jmsapi.class.php';
+
 class PluginIntegrasipamanCron extends CommonDBTM
 {
     // JumpServer's real path is "operate-logs" (singular "operate", no
@@ -26,17 +28,6 @@ class PluginIntegrasipamanCron extends CommonDBTM
     private const OPERATING_LOGS_PATH  = '/api/v1/audits/operate-logs/';
     private const LOGIN_LOGS_PATH      = '/api/v1/audits/login-logs/';
     private const SESSION_SHARING_PATH = '/api/v1/terminal/session-sharings/';
-
-    /**
-     * DRF page size requested from every list endpoint, and the hard cap
-     * on how many pages one cron run will follow per endpoint (a runaway
-     * guard: PAGE_SIZE * MAX_PAGES rows is the most a single run pulls from
-     * one endpoint). Incremental runs stay far under this; only a first
-     * run / post-reinstall full history pull can approach it, and the next
-     * run picks up whatever the cap left behind.
-     */
-    private const PAGE_SIZE = 100;
-    private const MAX_PAGES = 100;
 
     /**
      * Describe automatic actions provided by this class, used on the
@@ -98,7 +89,7 @@ class PluginIntegrasipamanCron extends CommonDBTM
         $operating_query = $start_date !== null ? ['date_from' => $start_date] : [];
         $operating_path  = self::OPERATING_LOGS_PATH
             . ($operating_query !== [] ? '?' . http_build_query($operating_query) : '');
-        $operating_logs  = self::signedGet($operating_path, ...$credentials);
+        $operating_logs  = PluginIntegrasipamanJmsApi::signedGet($operating_path, ...$credentials);
 
         if ($operating_logs === null) {
             $any_fetch_failed = true;
@@ -118,7 +109,7 @@ class PluginIntegrasipamanCron extends CommonDBTM
             $login_query['date_from'] = $start_date;
         }
         $login_path     = self::LOGIN_LOGS_PATH . '?' . http_build_query($login_query);
-        $login_failures = self::signedGet($login_path, ...$credentials);
+        $login_failures = PluginIntegrasipamanJmsApi::signedGet($login_path, ...$credentials);
 
         if ($login_failures === null) {
             $any_fetch_failed = true;
@@ -135,7 +126,7 @@ class PluginIntegrasipamanCron extends CommonDBTM
         // endpoint - confirmed live - so every run re-fetches the full result
         // set, now across all pages; dedup relies entirely on source_id via
         // importRows() below) -----------------------------------------------
-        $sharing_entries = self::signedGet(self::SESSION_SHARING_PATH, ...$credentials);
+        $sharing_entries = PluginIntegrasipamanJmsApi::signedGet(self::SESSION_SHARING_PATH, ...$credentials);
 
         if ($sharing_entries === null) {
             $any_fetch_failed = true;
@@ -247,183 +238,6 @@ class PluginIntegrasipamanCron extends CommonDBTM
         ]);
 
         return $iterator->count() > 0;
-    }
-
-    /**
-     * Fetch every page of a JumpServer list endpoint and return the
-     * concatenated entries.
-     *
-     * JumpServer paginates with DRF's limit/offset style and returns an
-     * absolute "next" URL (or null on the last page). Each page is a
-     * separate signed request - the signature covers the request path
-     * including its query string, so the offset/limit of every page has to
-     * be signed afresh; "next" is reduced to path+query and re-based on the
-     * configured base URL (its host may differ from base_url if JumpServer
-     * has a distinct SITE_URL). A non-paginated payload (a bare list, no
-     * "results"/"next") is returned as-is after one request.
-     *
-     * A page-1 failure returns null (hard failure, matching the old
-     * behaviour); a failure partway through pagination returns the entries
-     * gathered so far, leaving the rest for the next cron run.
-     *
-     * @param string $api_path          Relative path + query string for the first page.
-     * @param string $base_url          Configured JumpServer base URL/IP.
-     * @param string $access_key_id     Configured JumpServer Access Key ID.
-     * @param string $access_key_secret Configured JumpServer Access Key Secret.
-     * @param string $org_id            Configured JumpServer organization ID (X-JMS-ORG header).
-     *
-     * @return array<int, mixed>|null All entries across every page, or null on a first-page failure.
-     */
-    private static function signedGet(
-        string $api_path,
-        string $base_url,
-        string $access_key_id,
-        string $access_key_secret,
-        string $org_id
-    ): ?array {
-        $entries = [];
-        $path    = self::appendLimit($api_path);
-
-        for ($page = 0; $page < self::MAX_PAGES && $path !== null; $page++) {
-            $body = self::signedGetPage($path, $base_url, $access_key_id, $access_key_secret, $org_id);
-
-            if ($body === null) {
-                return $page === 0 ? null : $entries;
-            }
-
-            $results = $body['results'] ?? $body;
-
-            if (is_array($results)) {
-                foreach ($results as $entry) {
-                    $entries[] = $entry;
-                }
-            }
-
-            $next = $body['next'] ?? null;
-            $path = is_string($next) && $next !== '' ? self::nextPath($next) : null;
-        }
-
-        return $entries;
-    }
-
-    /**
-     * Append DRF's page-size parameter to a path unless it already carries
-     * one (e.g. a "next" URL, which encodes its own limit).
-     */
-    private static function appendLimit(string $api_path): string
-    {
-        if (strpos($api_path, 'limit=') !== false) {
-            return $api_path;
-        }
-
-        $separator = strpos($api_path, '?') === false ? '?' : '&';
-
-        return $api_path . $separator . 'limit=' . self::PAGE_SIZE;
-    }
-
-    /**
-     * Reduce a DRF "next" URL to the path+query this class signs and sends
-     * (the host is discarded - see signedGet()).
-     *
-     * @return string|null Path with query string, or null if unparseable.
-     */
-    private static function nextPath(string $next_url): ?string
-    {
-        $parts = parse_url($next_url);
-
-        if ($parts === false || !isset($parts['path'])) {
-            return null;
-        }
-
-        return $parts['path'] . (isset($parts['query']) ? '?' . $parts['query'] : '');
-    }
-
-    /**
-     * Fetch and decode one page from the JumpServer REST API.
-     *
-     * Authenticates via JumpServer's Access Key HTTP Signature scheme
-     * (HMAC-SHA256 request signing), not a plain bearer token - JumpServer
-     * has no plain-Token auth mode for this endpoint. Signing logic
-     * verified directly against production PAMAN (2026-08-26, HTTP 200 on
-     * a live curl test, for all 3 endpoints this class calls): string-to-
-     * sign is
-     * "(request-target): get {path}\naccept: application/json\ndate: {date}\nx-jms-org: {org}",
-     * signed with the Access Key Secret, sent as a "Signature" Authorization
-     * header alongside matching literal Date and X-JMS-ORG headers.
-     *
-     * @param string $api_path          Relative path + query string, exactly as sent on the wire.
-     * @param string $base_url          Configured JumpServer base URL/IP.
-     * @param string $access_key_id     Configured JumpServer Access Key ID.
-     * @param string $access_key_secret Configured JumpServer Access Key Secret.
-     * @param string $org_id            Configured JumpServer organization ID (X-JMS-ORG header).
-     *
-     * @return array<string, mixed>|null Decoded response body, or null on failure.
-     */
-    private static function signedGetPage(
-        string $api_path,
-        string $base_url,
-        string $access_key_id,
-        string $access_key_secret,
-        string $org_id
-    ): ?array {
-        $url = rtrim($base_url, '/') . $api_path;
-
-        // RFC 1123 date, matching the exact format signed into the request
-        // (JumpServer validates the Date header against the signature).
-        $date_header = gmdate('D, d M Y H:i:s \G\M\T');
-
-        $string_to_sign = "(request-target): get {$api_path}\naccept: application/json\ndate: {$date_header}\nx-jms-org: {$org_id}";
-        $signature      = base64_encode(hash_hmac('sha256', $string_to_sign, $access_key_secret, true));
-
-        $authorization = sprintf(
-            'Signature keyId="%s",algorithm="hmac-sha256",headers="(request-target) accept date x-jms-org",signature="%s"',
-            $access_key_id,
-            $signature
-        );
-
-        $curl_handle = curl_init();
-
-        curl_setopt_array($curl_handle, [
-            CURLOPT_URL            => $url,
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_HTTPHEADER     => [
-                'Accept: application/json',
-                'Date: ' . $date_header,
-                'Authorization: ' . $authorization,
-                'X-JMS-ORG: ' . $org_id,
-            ],
-            CURLOPT_TIMEOUT        => 30,
-            CURLOPT_SSL_VERIFYPEER => true,
-        ]);
-
-        $response   = curl_exec($curl_handle);
-        $http_code  = curl_getinfo($curl_handle, CURLINFO_HTTP_CODE);
-        $curl_error = curl_error($curl_handle);
-
-        curl_close($curl_handle);
-
-        if ($response === false) {
-            trigger_error('JumpServer API cURL error: ' . $curl_error, E_USER_WARNING);
-            return null;
-        }
-
-        if ($http_code < 200 || $http_code >= 300) {
-            trigger_error('JumpServer API returned HTTP ' . $http_code . ' for ' . $api_path, E_USER_WARNING);
-            return null;
-        }
-
-        $data = json_decode((string) $response, true);
-
-        if (json_last_error() !== JSON_ERROR_NONE || !is_array($data)) {
-            trigger_error('JumpServer API returned invalid JSON for ' . $api_path, E_USER_WARNING);
-            return null;
-        }
-
-        // Return the full body: signedGet() reads both "results" (the page
-        // of entries) and "next" (the following page URL, or null) off it.
-        // A non-paginated endpoint returns a bare list, handled by the
-        // caller's "$body['results'] ?? $body" fallback.
-        return $data;
     }
 
     /**

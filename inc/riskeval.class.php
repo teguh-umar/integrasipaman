@@ -107,7 +107,7 @@ class PluginIntegrasipamanRiskEval extends CommonGLPI
             return false;
         }
         foreach ($prefixes as $prefix) {
-            if ($prefix !== '' && str_starts_with($ip, $prefix)) {
+            if ($prefix !== '' && str_starts_with($ip, str_replace('xx', '', $prefix))) {
                 return true;
             }
         }
@@ -191,7 +191,7 @@ class PluginIntegrasipamanRiskEval extends CommonGLPI
         [$priority, $catatan] = self::priorityNote($high_risk, $is_prod, $is_admin);
 
         return [
-            'commands_id'         => (int) $cmd['id'],
+            'commands_id'         => (int) ($cmd['id'] ?? 0),
             'is_high_risk'        => $high_risk ? 1 : 0,
             'keyword_hit'         => mb_substr($keyword_hit, 0, 64),
             'risk_category'       => mb_substr(self::category($cmd_lower), 0, 32),
@@ -202,5 +202,134 @@ class PluginIntegrasipamanRiskEval extends CommonGLPI
             'catatan'             => $catatan,
             'rules_hash'          => $hash,
         ];
+    }
+
+    /**
+     * Upsert eval rows for every command row that has no eval row yet, or
+     * whose eval row was evaluated under a different rules_hash. Processes
+     * $chunk rows at a time so memory is flat and a killed run resumes
+     * (the WHERE re-selects whatever is still stale). Returns how many
+     * rows it evaluated and how many remain stale after it stopped.
+     *
+     * @return array{evaluated: int, stale_remaining: int}
+     */
+    public static function evaluateStale(int $chunk = 5000): array
+    {
+        global $DB;
+
+        $rules = self::loadRules();
+        $hash  = self::rulesHash($rules);
+        $evaluated = 0;
+
+        do {
+            // CONTINGENCY: if this GLPI query-builder LEFT JOIN + OR/NOT/null
+            // shape throws at runtime, swap the two $DB->request() calls in
+            // this method for the guarded raw SQL in Step 5 of task-3-brief.md
+            // (same chunk/loop structure). Do not switch pre-emptively -
+            // post-deploy verification decides.
+            $iterator = $DB->request([
+                'SELECT'     => ['c.id', 'c.risk_level', 'c.command', 'c.asset', 'c.jms_user'],
+                'FROM'       => self::COMMANDS_TABLE . ' AS c',
+                'LEFT JOIN'  => [
+                    self::EVAL_TABLE . ' AS e' => [
+                        'ON' => ['e' => 'commands_id', 'c' => 'id'],
+                    ],
+                ],
+                'WHERE'      => [
+                    'OR' => [
+                        ['e.id' => null],
+                        ['NOT'  => ['e.rules_hash' => $hash]],
+                    ],
+                ],
+                'LIMIT'      => $chunk,
+            ]);
+
+            $batch = 0;
+            foreach ($iterator as $row) {
+                self::upsertEval(self::evaluateRow($row, $rules, $hash));
+                $batch++;
+            }
+            $evaluated += $batch;
+        } while ($batch === $chunk);
+
+        $stale_remaining = $DB->request([
+            'COUNT'     => 'c',
+            'FROM'      => self::COMMANDS_TABLE . ' AS c',
+            'LEFT JOIN' => [
+                self::EVAL_TABLE . ' AS e' => ['ON' => ['e' => 'commands_id', 'c' => 'id']],
+            ],
+            'WHERE'     => ['OR' => [['e.id' => null], ['NOT' => ['e.rules_hash' => $hash]]]],
+        ])->current()['c'] ?? 0;
+
+        return ['evaluated' => $evaluated, 'stale_remaining' => (int) $stale_remaining];
+    }
+
+    /**
+     * Insert one eval row, or update it in place if a row for that
+     * commands_id already exists (UNIQUE key). GLPI's query builder has no
+     * ON DUPLICATE KEY UPDATE, so this is insert-then-update-on-conflict.
+     *
+     * @param array<string, mixed> $vals Output of evaluateRow().
+     */
+    private static function upsertEval(array $vals): void
+    {
+        global $DB;
+
+        if ($DB->insert(self::EVAL_TABLE, $vals)) {
+            return;
+        }
+
+        if (!str_contains((string) $DB->error(), 'Duplicate entry')) {
+            trigger_error(
+                sprintf('command_eval insert failed for commands_id %d: %s', $vals['commands_id'] ?? 0, $DB->error()),
+                E_USER_WARNING
+            );
+            return;
+        }
+
+        $id = $vals['commands_id'];
+        unset($vals['commands_id']);
+        $vals['date_eval'] = $_SESSION['glpi_currenttime'] ?? date('Y-m-d H:i:s');
+        $DB->update(self::EVAL_TABLE, $vals, ['commands_id' => $id]);
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    public static function cronInfo(string $name): array
+    {
+        if ($name === 'evaluate_commands') {
+            return ['description' => 'Classify JumpServer command records (high-risk, category, priority) into the command-eval table'];
+        }
+        return [];
+    }
+
+    /**
+     * CronTask 'evaluate_commands' (registered in hook.php, every 15 min,
+     * MODE_EXTERNAL). Cheap no-op when nothing is stale.
+     *
+     * @return int always 1 (a slow rules-change re-eval is normal, not a failure)
+     */
+    public static function cronEvaluate_commands(CronTask $task): int
+    {
+        global $DB;
+
+        $have = $DB->request(['COUNT' => 'c', 'FROM' => self::COMMANDS_TABLE])->current()['c'] ?? 0;
+        if ($have == 0) {
+            $task->log('No command rows to evaluate.');
+            $task->setVolume(0);
+            return 1;
+        }
+
+        $r = self::evaluateStale();
+
+        $task->log(sprintf(
+            'Evaluated %d command row(s); %d still stale (next run continues).',
+            $r['evaluated'],
+            $r['stale_remaining']
+        ));
+        $task->setVolume($r['evaluated']);
+
+        return 1;
     }
 }

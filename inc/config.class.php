@@ -310,15 +310,19 @@ class PluginIntegrasipamanConfig extends CommonDBTM
         }
 
         echo '<div class="mb-3">';
-        echo '<a class="btn btn-outline-secondary" href="' . Plugin::getWebDir('integrasipaman') . '/front/reeval.php">'
-            . htmlescape(__('Re-evaluate now', 'integrasipaman')) . '</a>';
-        echo '<small class="form-hint d-block">' . htmlescape(__('Save first if you changed a list above. Runs for up to 25 seconds; the cron finishes anything left.', 'integrasipaman')) . '</small>';
-        echo '</div>';
-
-        echo '<div class="mb-3">';
         echo Html::submit(__('Save'), ['name' => 'update_btn', 'class' => 'btn btn-primary']);
         echo '</div>';
 
+        Html::closeForm();
+
+        // Separate, non-nested POST form for the "Re-evaluate now" trigger.
+        // Html::closeForm() emits the _glpi_csrf_token hidden field that
+        // GLPI's Kernel-level CheckCsrfListener validates for the POST.
+        echo '<form method="post" action="' . Plugin::getWebDir('integrasipaman') . '/front/reeval.php">';
+        echo '<div class="mb-3">';
+        echo Html::submit(__('Re-evaluate now', 'integrasipaman'), ['name' => 'reeval', 'class' => 'btn btn-outline-secondary']);
+        echo '<small class="form-hint d-block">' . htmlescape(__('Save first if you changed a list above. Runs for up to ~20 seconds; the cron finishes anything left.', 'integrasipaman')) . '</small>';
+        echo '</div>';
         Html::closeForm();
 
         echo '</div>'; // card-body

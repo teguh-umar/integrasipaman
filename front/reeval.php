@@ -5,7 +5,8 @@
  * JumpServer Integration Dashboard plugin for GLPI
  * -------------------------------------------------------------------------
  * Config-gated "Re-evaluate now" trigger for the command risk evaluation.
- * Runs PluginIntegrasipamanRiskEval::evaluateStale() in a ~25-second
+ * POST-only (triggered from the button on the configuration page). Runs
+ * PluginIntegrasipamanRiskEval::evaluateStale() with a ~20-second wall-clock
  * budget so it cannot hit the nginx/php-fpm request timeout; the
  * evaluate_commands cron (every 15 min) finishes whatever is left.
  * -------------------------------------------------------------------------
@@ -18,6 +19,14 @@ include_once(__DIR__ . '/../inc/riskeval.class.php');
 Session::checkLoginUser();
 Session::checkRight('config', UPDATE);
 
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
+    Html::displayErrorAndDie(__('This action must be triggered from the "Re-evaluate now" button on the configuration page.', 'integrasipaman'));
+}
+
+// No manual Session::checkCSRF() here: GLPI's Kernel-level CheckCsrfListener
+// already validated and single-use-consumed the token for this POST before
+// this legacy file loaded; a second check would always fail.
+
 Html::header(
     __('Re-evaluate JumpServer commands', 'integrasipaman'),
     $_SERVER['PHP_SELF'],
@@ -25,15 +34,9 @@ Html::header(
     'plugins'
 );
 
-$deadline  = microtime(true) + 25.0;
-$evaluated = 0;
-$remaining = 0;
-
-do {
-    $r          = PluginIntegrasipamanRiskEval::evaluateStale(2000);
-    $evaluated += $r['evaluated'];
-    $remaining  = $r['stale_remaining'];
-} while ($r['evaluated'] > 0 && $remaining > 0 && microtime(true) < $deadline);
+$r         = PluginIntegrasipamanRiskEval::evaluateStale(2000, 20.0);
+$evaluated = $r['evaluated'];
+$remaining = $r['stale_remaining'];
 
 echo '<div class="card"><div class="card-body">';
 echo '<p>' . htmlescape(sprintf(

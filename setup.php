@@ -53,6 +53,7 @@ function plugin_init_integrasipaman(): void
         Plugin::registerClass('PluginIntegrasipamanCron');
         Plugin::registerClass('PluginIntegrasipamanConfig');
         Plugin::registerClass('PluginIntegrasipamanDashboard');
+        Plugin::registerClass('PluginIntegrasipamanJmsApi');
 
         // Expose a "Configure" link for this plugin under Setup > Plugins.
         if (Session::haveRight('config', UPDATE)) {

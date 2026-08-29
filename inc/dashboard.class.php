@@ -164,6 +164,84 @@ class PluginIntegrasipamanDashboard extends CommonGLPI
     }
 
     /**
+     * Render a small KPI strip (Total Events / Login Failures / Session
+     * Sharing, last 30 days) for the top of front/pbi.php.
+     *
+     * These reuse the card providers below for their numbers but render
+     * plain Tabler-card tiles rather than going through
+     * Glpi\Dashboard\Widget / Grid::getCardHtml(): GLPI 11 only loads the
+     * dashboard CSS bundle + its echarts/Dashboard.js runtime on pages
+     * that actually host a dashboard grid, so a widget rendered standalone
+     * on an ordinary Html::header() page comes out unstyled (and any chart
+     * widget renders blank). A self-contained tile has no such dependency.
+     * Charts are intentionally not reproduced here - see the design doc.
+     */
+    public static function renderOverview(): void
+    {
+        $tiles = [
+            self::provideTotalEvents(),
+            self::provideLoginFailures(),
+            self::provideSessionSharing(),
+        ];
+
+        echo '<div class="integrasipaman-kpi-row">';
+
+        foreach ($tiles as $tile) {
+            $number = (string) (int) ($tile['number'] ?? 0);
+            $label  = (string) ($tile['label'] ?? '');
+            $icon   = (string) ($tile['icon'] ?? 'ti ti-chart-bar');
+            $accent = isset($tile['color']) && is_string($tile['color'])
+                ? ' style="--kpi-accent:' . htmlescape($tile['color']) . '"'
+                : '';
+
+            echo '<div class="card integrasipaman-kpi"' . $accent . '>';
+            echo '<i class="' . htmlescape($icon) . ' integrasipaman-kpi-icon" aria-hidden="true"></i>';
+            echo '<span class="integrasipaman-kpi-number">' . htmlescape($number) . '</span>';
+            echo '<span class="integrasipaman-kpi-label">' . htmlescape($label) . '</span>';
+            echo '</div>';
+        }
+
+        echo '</div>';
+
+        echo '<p class="text-muted mb-4">' . htmlescape(__(
+            'Totals from this plugin\'s own JumpServer event log (last 30 days). The detail tables below are read live from the PBI reporting database and may differ in coverage.',
+            'integrasipaman'
+        )) . '</p>';
+
+        echo <<<'CSS'
+<style>
+.integrasipaman-kpi-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1rem;
+    margin-bottom: 1rem;
+}
+.integrasipaman-kpi {
+    flex: 1 1 180px;
+    padding: 1rem 1.25rem;
+    display: flex;
+    flex-direction: column;
+    gap: .25rem;
+    border-inline-start: 3px solid var(--kpi-accent, var(--tblr-primary, #066fd1));
+}
+.integrasipaman-kpi-icon {
+    font-size: 1.25rem;
+    opacity: .6;
+}
+.integrasipaman-kpi-number {
+    font-size: 2.25rem;
+    font-weight: 600;
+    line-height: 1.15;
+}
+.integrasipaman-kpi-label {
+    font-size: .8125rem;
+    opacity: .7;
+}
+</style>
+CSS;
+    }
+
+    /**
      * Provider for the "Total Events" bigNumber card. Called by GLPI core
      * as "PluginIntegrasipamanDashboard::provideTotalEvents", with a single
      * positional array argument - must return exactly the keys

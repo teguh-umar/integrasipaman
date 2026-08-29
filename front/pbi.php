@@ -107,6 +107,12 @@ Html::header(
     'PluginIntegrasipamanDashboard'
 );
 
+include_once(__DIR__ . '/../inc/dashboard.class.php');
+
+// KPI strip (this plugin's own event-log totals, last 30 days) above the
+// PBI-database detail tables - see PluginIntegrasipamanDashboard::renderOverview().
+PluginIntegrasipamanDashboard::renderOverview();
+
 $config = array_merge(
     PluginIntegrasipamanConfig::CONFIG_DEFAULTS,
     Config::getConfigurationValues(PluginIntegrasipamanConfig::CONFIG_CONTEXT)

@@ -240,6 +240,85 @@ function plugin_integrasipaman_install(): bool
         }
     }
 
+    $assetmap_table = 'glpi_plugin_jumpserver_assetmap';
+
+    if (!$DB->tableExists($assetmap_table)) {
+        $default_charset   = DBConnection::getDefaultCharset();
+        $default_collation = DBConnection::getDefaultCollation();
+        $default_key_sign  = DBConnection::getDefaultPrimaryKeySignOption();
+
+        // One row per DISTINCT `asset` string in
+        // glpi_plugin_jumpserver_commands. Pure derived data written by
+        // PluginIntegrasipamanCorrelation - no FK to `commands` (the key
+        // is the string; many command rows share one asset, and a
+        // retention prune of some of them must not drop the mapping).
+        $query = "CREATE TABLE `$assetmap_table` (
+            `id` INT {$default_key_sign} NOT NULL AUTO_INCREMENT,
+            `asset` VARCHAR(191) NOT NULL DEFAULT '',
+            `parsed_name` VARCHAR(191) NOT NULL DEFAULT '',
+            `parsed_ip` VARCHAR(45) NOT NULL DEFAULT '',
+            `computers_id` INT {$default_key_sign} NOT NULL DEFAULT 0,
+            `ipnetworks_id` INT {$default_key_sign} NOT NULL DEFAULT 0,
+            `is_production` TINYINT(1) NOT NULL DEFAULT 0,
+            `resolve_method` VARCHAR(20) NOT NULL DEFAULT 'unresolved',
+            `is_manual` TINYINT(1) NOT NULL DEFAULT 0,
+            `note` VARCHAR(255) NOT NULL DEFAULT '',
+            `last_resolved_at` DATETIME NULL DEFAULT NULL,
+            `date_creation` TIMESTAMP NULL DEFAULT NULL,
+            `date_mod` TIMESTAMP NULL DEFAULT NULL,
+            PRIMARY KEY (`id`),
+            UNIQUE KEY `asset` (`asset`),
+            KEY `computers_id` (`computers_id`),
+            KEY `is_production` (`is_production`),
+            KEY `resolve_method` (`resolve_method`)
+        ) ENGINE=InnoDB DEFAULT CHARSET={$default_charset} COLLATE={$default_collation}";
+
+        if (!$DB->doQuery($query)) {
+            trigger_error(
+                sprintf('Unable to create table %s: %s', $assetmap_table, $DB->error()),
+                E_USER_WARNING
+            );
+            return false;
+        }
+    }
+
+    $usermap_table = 'glpi_plugin_jumpserver_usermap';
+
+    if (!$DB->tableExists($usermap_table)) {
+        $default_charset   = DBConnection::getDefaultCharset();
+        $default_collation = DBConnection::getDefaultCollation();
+        $default_key_sign  = DBConnection::getDefaultPrimaryKeySignOption();
+
+        // One row per DISTINCT `jms_user` string. Same rationale as
+        // glpi_plugin_jumpserver_assetmap - derived data, no FK.
+        $query = "CREATE TABLE `$usermap_table` (
+            `id` INT {$default_key_sign} NOT NULL AUTO_INCREMENT,
+            `jms_user` VARCHAR(191) NOT NULL DEFAULT '',
+            `parsed_login` VARCHAR(191) NOT NULL DEFAULT '',
+            `users_id` INT {$default_key_sign} NOT NULL DEFAULT 0,
+            `is_admin` TINYINT(1) NOT NULL DEFAULT 0,
+            `resolve_method` VARCHAR(20) NOT NULL DEFAULT 'unresolved',
+            `is_manual` TINYINT(1) NOT NULL DEFAULT 0,
+            `note` VARCHAR(255) NOT NULL DEFAULT '',
+            `last_resolved_at` DATETIME NULL DEFAULT NULL,
+            `date_creation` TIMESTAMP NULL DEFAULT NULL,
+            `date_mod` TIMESTAMP NULL DEFAULT NULL,
+            PRIMARY KEY (`id`),
+            UNIQUE KEY `jms_user` (`jms_user`),
+            KEY `users_id` (`users_id`),
+            KEY `is_admin` (`is_admin`),
+            KEY `resolve_method` (`resolve_method`)
+        ) ENGINE=InnoDB DEFAULT CHARSET={$default_charset} COLLATE={$default_collation}";
+
+        if (!$DB->doQuery($query)) {
+            trigger_error(
+                sprintf('Unable to create table %s: %s', $usermap_table, $DB->error()),
+                E_USER_WARNING
+            );
+            return false;
+        }
+    }
+
     include_once(__DIR__ . '/inc/cron.class.php');
 
     CronTask::Register(
@@ -312,9 +391,10 @@ function plugin_integrasipaman_uninstall(): bool
         array_keys(PluginIntegrasipamanConfig::CONFIG_DEFAULTS)
     );
 
-    // The event tables (glpi_plugin_jumpserver_logs,
+    // The event & derived tables (glpi_plugin_jumpserver_logs,
     // glpi_plugin_jumpserver_commands, glpi_plugin_jumpserver_sessions,
-    // glpi_plugin_jumpserver_command_eval) are
+    // glpi_plugin_jumpserver_command_eval, glpi_plugin_jumpserver_assetmap,
+    // glpi_plugin_jumpserver_usermap) are
     // deliberately NOT dropped on uninstall. Their rows are pulled from
     // JumpServer's audit API and JumpServer rotates its own audit history
     // out over time, so a drop-and-reinstall would permanently lose every

@@ -24,6 +24,11 @@ evaluation and reporting on top of it.
   target is a production asset, whether the actor is a known admin, and a
   resulting priority + note. Rules live in editable config lists; changing a
   list re-evaluates all history automatically (hash-based staleness).
+- **Asset & user correlation** — resolves each JumpServer asset to a
+  production verdict (against selected core IPNetworks or "IP Addressing"
+  plugin ranges, or a matched GLPI `Computer`) and each JumpServer actor to
+  an admin verdict (GLPI group membership), with per-row manual override.
+  The editable prefix / admin-user lists remain the fallback.
 - **One-way asset sync** — GLPI is the source of truth; each GLPI `Computer`
   create/update is pushed to JumpServer.
 - **PBI Insights page** — an optional reporting view backed by a separate
@@ -70,6 +75,9 @@ inc/
   jmsapi.class.php       JumpServer REST transport (request signing, pagination)
   terminalpull.class.php terminal command/session pull + retention
   riskeval.class.php     command risk classification engine
+  correlation.class.php  asset/user -> production/admin resolver
+  assetmap.class.php     asset -> production mapping itemtype
+  usermap.class.php      user -> admin mapping itemtype
   assetsync.class.php    GLPI Computer -> JumpServer sync
   dashboard.class.php    dashboard cards + Tools-menu entry
   pbiconnection.class.php read-only reporting-DB connection
@@ -77,10 +85,14 @@ front/
   config.form.php    configuration page
   backfill.php        manual month backfill trigger
   reeval.php          manual "re-evaluate commands now" trigger
+  correlation.php    correlation dashboard + "re-resolve now" trigger
+  assetmap.php / assetmap.form.php   asset-mapping list + edit
+  usermap.php / usermap.form.php     user-mapping list + edit
   export.php          activity-log view
   pbi.php             PBI Insights page
+tests/               offline stub tests (run with a bare PHP CLI)
 ```
 
 ## License
 
-GPL-2.0-or-later. See [LICENSE](LICENSE).
+GPL-3.0-or-later. See [LICENSE](LICENSE).

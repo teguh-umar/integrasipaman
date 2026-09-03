@@ -23,7 +23,7 @@
 // row in glpi_plugins. Confirmed by comparison against a working
 // reference plugin on the target instance, which has no such guard.
 
-define('PLUGIN_INTEGRASIPAMAN_VERSION', '1.10.1');
+define('PLUGIN_INTEGRASIPAMAN_VERSION', '1.11.0');
 
 // Minimum GLPI version, inclusive
 define('PLUGIN_INTEGRASIPAMAN_MIN_GLPI', '10.0.0');
@@ -57,6 +57,8 @@ function plugin_init_integrasipaman(): void
         // itemtype - it is loaded via require_once where used, not registered.
         Plugin::registerClass('PluginIntegrasipamanTerminalPull');
         Plugin::registerClass('PluginIntegrasipamanRiskEval');
+        Plugin::registerClass('PluginIntegrasipamanAssetMap');
+        Plugin::registerClass('PluginIntegrasipamanUserMap');
 
         // Expose a "Configure" link for this plugin under Setup > Plugins.
         if (Session::haveRight('config', UPDATE)) {
@@ -112,8 +114,8 @@ function plugin_version_integrasipaman(): array
     return [
         'name'           => 'JumpServer Integration Dashboard',
         'version'        => PLUGIN_INTEGRASIPAMAN_VERSION,
-        'author'         => 'Internal IT Team',
-        'license'        => 'GPLv2+',
+        'author'         => 'PGN ICT',
+        'license'        => 'GPL-3.0-or-later',
         'homepage'       => '',
         // Flat minGlpiVersion/maxGlpiVersion is the key format GLPI's own
         // plugin-directory scan actually reads to register a newly-found

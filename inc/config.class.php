@@ -93,6 +93,22 @@ class PluginIntegrasipamanConfig extends CommonDBTM
         'jumpserver_risk_keywords'           => self::SEED_RISK_KEYWORDS,
         'jumpserver_admin_users'             => self::SEED_ADMIN_USERS,
         'jumpserver_production_ip_prefixes'  => self::SEED_PROD_PREFIXES,
+        // Asset & user correlation (inc/correlation.class.php + the
+        // resolver run at the top of the evaluate_commands cron - Piece 3).
+        // With both selections empty the resolver routes everything
+        // through the two fallback lists above, i.e. identical verdicts
+        // to Piece 2. correlation_match_mode is ip_only | name_only |
+        // hybrid; the other two are comma-separated glpi_ipnetworks.id /
+        // glpi_groups.id.
+        'correlation_match_mode'             => 'ip_only',
+        'correlation_production_ipnetworks'  => '',
+        'correlation_production_addressings' => '',
+        'correlation_admin_groups'           => '',
+        // Bumped by the resolver / an admin override only when an
+        // is_production / is_admin verdict actually changes; folded into
+        // PluginIntegrasipamanRiskEval::rulesHash() so a plain new asset
+        // string does not force a full re-evaluation.
+        'correlation_maps_generation'        => '0',
     ];
 
     public static function getTypeName($nb = 0)
@@ -124,6 +140,8 @@ class PluginIntegrasipamanConfig extends CommonDBTM
      */
     public function showFormConfig(): void
     {
+        global $DB;
+
         if (!Session::haveRight('config', UPDATE)) {
             return;
         }
@@ -298,8 +316,8 @@ class PluginIntegrasipamanConfig extends CommonDBTM
 
         foreach ([
             'jumpserver_risk_keywords'          => [__('High-risk keywords', 'integrasipaman'), __('A command containing any of these (or JumpServer risk level >= 4) is flagged high-risk.', 'integrasipaman'), 8],
-            'jumpserver_admin_users'            => [__('Admin users', 'integrasipaman'), __('Format: Full Name(login) - exactly as shown in the command "User" column. High-risk actions by these users on production assets are MEDIUM, not HIGH.', 'integrasipaman'), 6],
-            'jumpserver_production_ip_prefixes' => [__('Production IP prefixes', 'integrasipaman'), __('An asset whose IP starts with one of these is "production". e.g. 10.0.0.', 'integrasipaman'), 3],
+            'jumpserver_admin_users'            => [__('Fallback: admin users', 'integrasipaman'), __('Used only when a command\'s user has no GLPI match. Format: Full Name(login). High-risk actions by these users on production assets are MEDIUM, not HIGH.', 'integrasipaman'), 6],
+            'jumpserver_production_ip_prefixes' => [__('Fallback: production IP prefixes', 'integrasipaman'), __('Used only when a command\'s asset resolves to no GLPI IPNetwork or Computer. An asset whose IP starts with one of these is "production". e.g. 10.0.0.', 'integrasipaman'), 3],
         ] as $key => [$label, $hint, $rows]) {
             echo '<div class="mb-3">';
             echo '<label class="form-label" for="' . $key . '">' . htmlescape($label) . '</label>';
@@ -308,6 +326,81 @@ class PluginIntegrasipamanConfig extends CommonDBTM
             echo '<small class="form-hint">' . htmlescape($hint) . '</small>';
             echo '</div>';
         }
+
+        echo '<hr class="my-4">';
+        echo '<h4>' . __('Asset & User Correlation', 'integrasipaman') . '</h4>';
+        echo '<p class="text-muted">' . __('Resolve each command\'s asset and user against GLPI instead of the fallback lists above. Runs at the start of the "Classify JumpServer command records" cron and whenever you save this page.', 'integrasipaman') . '</p>';
+
+        echo '<div class="mb-3">';
+        echo '<label class="form-label" for="correlation_match_mode">' . __('Asset match mode', 'integrasipaman') . '</label>';
+        Dropdown::showFromArray('correlation_match_mode', [
+            'ip_only'   => __('IP only - test the IP parsed from the asset string', 'integrasipaman'),
+            'name_only' => __('Computer name only - test the GLPI Computer\'s IP address(es)', 'integrasipaman'),
+            'hybrid'    => __('Hybrid - parsed IP first, then the matched Computer\'s IPs', 'integrasipaman'),
+        ], ['value' => $config_values['correlation_match_mode'], 'width' => '100%']);
+        echo '</div>';
+
+        if (Plugin::isPluginActive('addressing')) {
+            echo '<div class="mb-3">';
+            echo '<label class="form-label">' . __('Production IP ranges (Tools > IP Addressing)', 'integrasipaman') . '</label>';
+            $addr = [];
+            foreach ($DB->request([
+                'FROM'  => 'glpi_plugin_addressing_addressings',
+                'WHERE' => ['is_deleted' => 0],
+                'ORDER' => 'name ASC',
+            ]) as $a) {
+                $label = trim((string) ($a['name'] ?? '')) ?: ('#' . $a['id']);
+                if ((string) ($a['begin_ip'] ?? '') !== '') {
+                    $label .= ' (' . $a['begin_ip'] . ' - ' . $a['end_ip'] . ')';
+                }
+                $addr[(int) $a['id']] = $label;
+            }
+            Dropdown::showFromArray('correlation_production_addressings', $addr, [
+                'values'   => array_values(array_filter(array_map('intval', explode(',', (string) $config_values['correlation_production_addressings'])))),
+                'multiple' => true,
+                'width'    => '100%',
+            ]);
+            echo '<small class="form-hint">' . htmlescape(__('An asset whose tested IP falls inside any selected range is "production". This is the recommended source.', 'integrasipaman')) . '</small>';
+            echo '</div>';
+        }
+
+        echo '<div class="mb-3">';
+        echo '<label class="form-label">' . __('Production networks (core IPNetwork)', 'integrasipaman') . '</label>';
+        $networks = [];
+        // glpi_ipnetworks is a tree dropdown - no is_deleted column.
+        foreach ($DB->request(['FROM' => 'glpi_ipnetworks', 'ORDER' => 'name ASC']) as $n) {
+            $label = trim((string) ($n['completename'] ?: $n['name']));
+            if ((string) $n['address'] !== '' && (string) $n['netmask'] !== '') {
+                $label .= ' (' . $n['address'] . ' / ' . $n['netmask'] . ')';
+            }
+            $networks[(int) $n['id']] = $label !== '' ? $label : ('#' . $n['id']);
+        }
+        Dropdown::showFromArray('correlation_production_ipnetworks', $networks, [
+            'values'   => array_values(array_filter(array_map('intval', explode(',', (string) $config_values['correlation_production_ipnetworks'])))),
+            'multiple' => true,
+            'width'    => '100%',
+        ]);
+        echo '<small class="form-hint">' . htmlescape(__('An asset whose tested IP falls inside any selected network is "production". Leave empty if you use the IP Addressing ranges above (core IPNetwork is often auto-populated).', 'integrasipaman')) . '</small>';
+        echo '</div>';
+
+        echo '<div class="mb-3">';
+        echo '<label class="form-label">' . __('Admin groups', 'integrasipaman') . '</label>';
+        $groups = [];
+        foreach ($DB->request(['FROM' => 'glpi_groups', 'WHERE' => ['is_usergroup' => 1], 'ORDER' => 'name ASC']) as $g) {
+            $groups[(int) $g['id']] = trim((string) ($g['completename'] ?: $g['name'])) ?: ('#' . $g['id']);
+        }
+        Dropdown::showFromArray('correlation_admin_groups', $groups, [
+            'values'   => array_values(array_filter(array_map('intval', explode(',', (string) $config_values['correlation_admin_groups'])))),
+            'multiple' => true,
+            'width'    => '100%',
+        ]);
+        echo '<small class="form-hint">' . htmlescape(__('A command\'s user who is a direct member of any selected group is a sanctioned admin (their high-risk production actions are MEDIUM, not HIGH). Child groups are not included - select each group explicitly.', 'integrasipaman')) . '</small>';
+        echo '</div>';
+
+        echo '<div class="mb-3">';
+        echo '<a class="btn btn-outline-secondary" href="' . Plugin::getWebDir('integrasipaman') . '/front/correlation.php">'
+            . htmlescape(__('Manage asset & user mappings', 'integrasipaman')) . '</a>';
+        echo '</div>';
 
         echo '<div class="mb-3">';
         echo Html::submit(__('Save'), ['name' => 'update_btn', 'class' => 'btn btn-primary']);

@@ -157,35 +157,74 @@ class PluginIntegrasipamanRiskEval extends CommonGLPI
     }
 
     /**
-     * The three rule lists, parsed from config. Keywords are lowercased
-     * here so matchKeyword() gets a ready list.
+     * The three rule lists, parsed from config, plus the Piece 3
+     * correlation maps. Keywords are lowercased here so matchKeyword()
+     * gets a ready list.
      *
-     * @return array{keywords: array<int,string>, admins: array<int,string>, prefixes: array<int,string>}
+     * @return array{keywords: array<int,string>, admins: array<int,string>, prefixes: array<int,string>, asset_prod: array<string,bool>, user_admin: array<string,bool>}
      */
     public static function loadRules(): array
     {
         $cfg = Config::getConfigurationValues(PluginIntegrasipamanConfig::CONFIG_CONTEXT);
 
         return [
-            'keywords' => array_map('mb_strtolower', self::parseList((string) ($cfg['jumpserver_risk_keywords'] ?? ''), true)),
-            'admins'   => self::parseList((string) ($cfg['jumpserver_admin_users'] ?? '')),
-            'prefixes' => self::parseList((string) ($cfg['jumpserver_production_ip_prefixes'] ?? '')),
+            'keywords'   => array_map('mb_strtolower', self::parseList((string) ($cfg['jumpserver_risk_keywords'] ?? ''), true)),
+            'admins'     => self::parseList((string) ($cfg['jumpserver_admin_users'] ?? '')),
+            'prefixes'   => self::parseList((string) ($cfg['jumpserver_production_ip_prefixes'] ?? '')),
+            // Piece 3: GLPI-native resolution (asset -> production,
+            // user -> admin). evaluateRow() reads these first and falls
+            // back to admins/prefixes above only when a string has no map
+            // row yet. A read failure (e.g. the map tables not yet created
+            // on a deploy where the version was not bumped) degrades to an
+            // empty map -> exact Piece 2 behaviour via the fallback lists.
+            'asset_prod' => self::safeCorrelationMap('assetProdMap'),
+            'user_admin' => self::safeCorrelationMap('userAdminMap'),
         ];
     }
 
     /**
+     * @return array<string,bool>
+     */
+    private static function safeCorrelationMap(string $method): array
+    {
+        try {
+            /** @var array<string,bool> $map */
+            $map = PluginIntegrasipamanCorrelation::$method();
+            return $map;
+        } catch (\Throwable $e) {
+            trigger_error(
+                sprintf('riskeval: correlation %s() failed (%s); using the fallback lists only', $method, $e->getMessage()),
+                E_USER_WARNING
+            );
+            return [];
+        }
+    }
+
+    /**
      * 40-char sha1 of every input that can change a classification: the
-     * three lists plus CATEGORY_MAP_VERSION. Rows whose stored rules_hash
-     * differs from this are re-evaluated.
+     * three lists, the Piece 3 correlation-maps generation counter (bumped
+     * only when a resolve actually changes an is_production / is_admin
+     * verdict, or an admin override does - so a plain new asset string
+     * does NOT trigger a full re-evaluation), plus CATEGORY_MAP_VERSION.
+     * Rows whose stored rules_hash differs from this are re-evaluated.
      *
      * @param array{keywords: array, admins: array, prefixes: array} $rules
      */
     public static function rulesHash(array $rules): string
     {
+        $generation = 0;
+        try {
+            $generation = PluginIntegrasipamanCorrelation::mapsGeneration();
+        } catch (\Throwable $e) {
+            // Correlation unavailable -> generation 0; the ?? fallback in
+            // evaluateRow() keeps classification correct regardless.
+        }
+
         return sha1(
             implode("\n", $rules['keywords']) . "\0"
           . implode("\n", $rules['admins'])   . "\0"
           . implode("\n", $rules['prefixes']) . "\0"
+          . 'gen' . $generation . "\0"
           . self::CATEGORY_MAP_VERSION
         );
     }
@@ -193,8 +232,8 @@ class PluginIntegrasipamanRiskEval extends CommonGLPI
     /**
      * Full eval-table column set for one command row.
      *
-     * @param array{id: int|string, risk_level: int|string, command: ?string, asset: ?string, jms_user: ?string} $cmd
-     * @param array{keywords: array, admins: array, prefixes: array}                                              $rules
+     * @param array{id: int|string, risk_level: int|string, command: ?string, asset: ?string, jms_user: ?string}          $cmd
+     * @param array{keywords: array, admins: array, prefixes: array, asset_prod: array<string,bool>, user_admin: array<string,bool>} $rules
      * @return array<string, mixed>
      */
     public static function evaluateRow(array $cmd, array $rules, string $hash): array
@@ -205,8 +244,15 @@ class PluginIntegrasipamanRiskEval extends CommonGLPI
         $high_risk   = self::isHighRisk($risk_level, $keyword_hit);
 
         $ip       = self::extractIp((string) ($cmd['asset'] ?? ''));
-        $is_prod  = self::isProduction($ip, $rules['prefixes']);
-        $is_admin = in_array((string) ($cmd['jms_user'] ?? ''), $rules['admins'], true);
+        // Piece 3: the correlation map wins; the flat lists are the
+        // fallback only for a string with no map row yet. `??` falls
+        // through on absent/null only, so a map row resolved to false
+        // correctly yields non-production without consulting the prefix
+        // list (assetProdMap() returns every row, not just the true ones).
+        $is_prod  = $rules['asset_prod'][(string) ($cmd['asset'] ?? '')]
+                    ?? self::isProduction($ip, $rules['prefixes']);
+        $is_admin = $rules['user_admin'][(string) ($cmd['jms_user'] ?? '')]
+                    ?? in_array((string) ($cmd['jms_user'] ?? ''), $rules['admins'], true);
 
         [$priority, $catatan] = self::priorityNote($high_risk, $is_prod, $is_admin);
 
@@ -384,6 +430,22 @@ class PluginIntegrasipamanRiskEval extends CommonGLPI
             $task->log('No command rows to evaluate.');
             $task->setVolume(0);
             return 1;
+        }
+
+        // Piece 3: refresh the asset/user correlation maps before
+        // evaluating so is_production / is_admin are current. A failure
+        // here is logged, not fatal - evaluation continues on the
+        // existing maps and self-corrects next pass via rules_hash.
+        try {
+            $c = PluginIntegrasipamanCorrelation::resolveAll();
+            $task->log(sprintf(
+                'Correlation: %d/%d assets resolved (%d prefix-fallback, %d manual, %d unresolved); %d/%d users resolved.',
+                $c['assets']['resolved'], $c['assets']['total'], $c['assets']['prefix_fallback'],
+                $c['assets']['manual'], $c['assets']['unresolved'],
+                $c['users']['resolved'], $c['users']['total']
+            ));
+        } catch (\Throwable $e) {
+            $task->log('Correlation resolve failed (evaluation continues on existing maps): ' . $e->getMessage());
         }
 
         $r = self::evaluateStale();

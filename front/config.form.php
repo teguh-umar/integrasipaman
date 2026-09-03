@@ -19,6 +19,7 @@ Session::checkLoginUser();
 Session::checkRight('config', UPDATE);
 
 include_once(__DIR__ . '/../inc/config.class.php');
+include_once(__DIR__ . '/../inc/correlation.class.php');
 
 if (isset($_POST['update'])) {
     // No manual Session::checkCSRF() here: GLPI's Kernel-level
@@ -47,6 +48,22 @@ if (isset($_POST['update'])) {
     $jumpserver_risk_keywords          = trim($_POST['jumpserver_risk_keywords'] ?? '');
     $jumpserver_admin_users            = trim($_POST['jumpserver_admin_users'] ?? '');
     $jumpserver_production_ip_prefixes = trim($_POST['jumpserver_production_ip_prefixes'] ?? '');
+
+    $correlation_match_mode = in_array(($_POST['correlation_match_mode'] ?? ''), ['ip_only', 'name_only', 'hybrid'], true)
+        ? $_POST['correlation_match_mode']
+        : 'ip_only';
+    $correlation_production_ipnetworks = implode(',', array_values(array_unique(array_filter(
+        array_map('intval', (array) ($_POST['correlation_production_ipnetworks'] ?? [])),
+        static fn ($n) => $n > 0
+    ))));
+    $correlation_production_addressings = implode(',', array_values(array_unique(array_filter(
+        array_map('intval', (array) ($_POST['correlation_production_addressings'] ?? [])),
+        static fn ($n) => $n > 0
+    ))));
+    $correlation_admin_groups = implode(',', array_values(array_unique(array_filter(
+        array_map('intval', (array) ($_POST['correlation_admin_groups'] ?? [])),
+        static fn ($n) => $n > 0
+    ))));
 
     if ($jumpserver_url !== '' && filter_var($jumpserver_url, FILTER_VALIDATE_URL) === false) {
         Session::addMessageAfterRedirect(
@@ -82,9 +99,22 @@ if (isset($_POST['update'])) {
         'jumpserver_risk_keywords'          => $jumpserver_risk_keywords,
         'jumpserver_admin_users'            => $jumpserver_admin_users,
         'jumpserver_production_ip_prefixes' => $jumpserver_production_ip_prefixes,
+        'correlation_match_mode'            => $correlation_match_mode,
+        'correlation_production_ipnetworks' => $correlation_production_ipnetworks,
+        'correlation_production_addressings' => $correlation_production_addressings,
+        'correlation_admin_groups'          => $correlation_admin_groups,
     ]);
 
     Session::addMessageAfterRedirect(__('Configuration successfully updated.'));
+
+    // Piece 3: re-resolve the correlation maps with the new settings
+    // (budgeted so a large asset set cannot 504 this request; the cron
+    // finishes any leftover rows).
+    try {
+        PluginIntegrasipamanCorrelation::resolveAll(10.0);
+    } catch (\Throwable $e) {
+        trigger_error('config: post-save correlation resolve failed: ' . $e->getMessage(), E_USER_WARNING);
+    }
 
     Html::back();
 } else {

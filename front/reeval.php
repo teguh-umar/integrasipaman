@@ -14,6 +14,7 @@
 
 include('../../../inc/includes.php');
 include_once(__DIR__ . '/../inc/config.class.php');
+include_once(__DIR__ . '/../inc/correlation.class.php');
 include_once(__DIR__ . '/../inc/riskeval.class.php');
 
 Session::checkLoginUser();
@@ -33,6 +34,12 @@ Html::header(
     'config',
     'plugins'
 );
+
+try {
+    PluginIntegrasipamanCorrelation::resolveAll(10.0);
+} catch (\Throwable $e) {
+    trigger_error('reeval: correlation resolve failed: ' . $e->getMessage(), E_USER_WARNING);
+}
 
 $r         = PluginIntegrasipamanRiskEval::evaluateStale(2000, 20.0);
 $evaluated = $r['evaluated'];

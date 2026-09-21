@@ -355,6 +355,13 @@ function plugin_integrasipaman_install(): bool
         ]
     );
 
+    include_once(__DIR__ . '/inc/profile.class.php');
+
+    // Create plugin_integrasipaman_config and seed it per profile. Safe to
+    // re-run: an existing right is seeded for nobody but a super-admin
+    // profile (see PluginIntegrasipamanProfile::seedRights()).
+    PluginIntegrasipamanProfile::seedRights();
+
     include_once(__DIR__ . '/inc/config.class.php');
 
     // Seed defaults on a fresh install; on upgrade, add only keys absent
@@ -381,6 +388,9 @@ function plugin_integrasipaman_uninstall(): bool
 {
     include_once(__DIR__ . '/inc/cron.class.php');
     include_once(__DIR__ . '/inc/config.class.php');
+    include_once(__DIR__ . '/inc/profile.class.php');
+
+    PluginIntegrasipamanProfile::dropRights();
 
     CronTask::Unregister('PluginIntegrasipamanCron');
     CronTask::Unregister('PluginIntegrasipamanTerminalPull');

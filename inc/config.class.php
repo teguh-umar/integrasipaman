@@ -138,13 +138,49 @@ class PluginIntegrasipamanConfig extends CommonDBTM
      *
      * @return void
      */
-    public function showFormConfig(): void
+    /**
+     * Section provider for the shared "PGN Suite" tab on Setup > General.
+     * Returns null when the current user may not see the section - the host
+     * page only enforces core `config` READ, so the plugin right is checked
+     * here (suite contract v1, hub file section 5).
+     *
+     * @return array{title:string,icon:string,order:int,render:string}|null
+     */
+    public static function suiteSection(): ?array
+    {
+        if (!Session::haveRight(PluginIntegrasipamanProfile::RIGHT, READ)) {
+            return null;
+        }
+
+        return [
+            'title'  => __('JumpServer Integration', 'integrasipaman'),
+            'icon'   => 'ti ti-terminal-2',
+            'order'  => 40,
+            'render' => self::class . '::renderSuiteSection',
+        ];
+    }
+
+    /** Body of the PGN Suite section: the same form as the standalone page. */
+    public static function renderSuiteSection(): void
+    {
+        (new self())->showFormConfig(true);
+    }
+
+    /**
+     * @param bool $from_pgnsuite True when rendered inside the shared PGN
+     *                            Suite tab. Emits the _from_pgnsuite marker
+     *                            so front/config.form.php knows to redirect
+     *                            back to the tab instead of Html::back().
+     */
+    public function showFormConfig(bool $from_pgnsuite = false): void
     {
         global $DB;
 
-        if (!Session::haveRight('config', UPDATE)) {
+        if (!Session::haveRight(PluginIntegrasipamanProfile::RIGHT, READ)) {
             return;
         }
+
+        $canedit = Session::haveRight(PluginIntegrasipamanProfile::RIGHT, UPDATE);
 
         $config_values = array_merge(
             self::CONFIG_DEFAULTS,
@@ -172,6 +208,13 @@ class PluginIntegrasipamanConfig extends CommonDBTM
         // Embedding/checking a token a second time would consume it twice
         // and always fail the second check.
         echo Html::hidden('update', ['value' => '1']);
+
+        if ($from_pgnsuite) {
+            // Only the tab's copy carries this; the standalone page's form
+            // does not, so a plugin-right-only admin is never redirected to
+            // Setup > General, which they cannot open.
+            echo Html::hidden('_from_pgnsuite', ['value' => '1']);
+        }
 
         echo '<div class="mb-3">';
         echo '<label class="form-label" for="jumpserver_url">' . __('JumpServer URL / IP') . '</label>';
@@ -402,21 +445,27 @@ class PluginIntegrasipamanConfig extends CommonDBTM
             . htmlescape(__('Manage asset & user mappings', 'integrasipaman')) . '</a>';
         echo '</div>';
 
-        echo '<div class="mb-3">';
-        echo Html::submit(__('Save'), ['name' => 'update_btn', 'class' => 'btn btn-primary']);
-        echo '</div>';
+        if ($canedit) {
+            echo '<div class="mb-3">';
+            echo Html::submit(__('Save'), ['name' => 'update_btn', 'class' => 'btn btn-primary']);
+            echo '</div>';
+        } else {
+            echo '<div class="alert alert-info">' . htmlescape(__('You have read-only access to this configuration.', 'integrasipaman')) . '</div>';
+        }
 
         Html::closeForm();
 
         // Separate, non-nested POST form for the "Re-evaluate now" trigger.
         // Html::closeForm() emits the _glpi_csrf_token hidden field that
         // GLPI's Kernel-level CheckCsrfListener validates for the POST.
-        echo '<form method="post" action="' . Plugin::getWebDir('integrasipaman') . '/front/reeval.php">';
-        echo '<div class="mb-3">';
-        echo Html::submit(__('Re-evaluate now', 'integrasipaman'), ['name' => 'reeval', 'class' => 'btn btn-outline-secondary']);
-        echo '<small class="form-hint d-block">' . htmlescape(__('Save first if you changed a list above. Runs for up to ~20 seconds; the cron finishes anything left.', 'integrasipaman')) . '</small>';
-        echo '</div>';
-        Html::closeForm();
+        if ($canedit) {
+            echo '<form method="post" action="' . Plugin::getWebDir('integrasipaman') . '/front/reeval.php">';
+            echo '<div class="mb-3">';
+            echo Html::submit(__('Re-evaluate now', 'integrasipaman'), ['name' => 'reeval', 'class' => 'btn btn-outline-secondary']);
+            echo '<small class="form-hint d-block">' . htmlescape(__('Save first if you changed a list above. Runs for up to ~20 seconds; the cron finishes anything left.', 'integrasipaman')) . '</small>';
+            echo '</div>';
+            Html::closeForm();
+        }
 
         echo '</div>'; // card-body
         echo '</div>'; // card

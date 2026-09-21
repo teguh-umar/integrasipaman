@@ -14,14 +14,19 @@
 include('../../../inc/includes.php');
 
 // Explicit, strict access control: a real authenticated session first,
-// then the specific right needed to change plugin configuration.
+// then this plugin's own right. v2.0.0 moved off core `config` UPDATE so a
+// PAM administrator no longer needs access to all of GLPI's Setup.
+// READ opens the page; saving needs UPDATE (checked on the POST branch).
 Session::checkLoginUser();
-Session::checkRight('config', UPDATE);
+include_once(__DIR__ . '/../inc/profile.class.php');
+Session::checkRight(PluginIntegrasipamanProfile::RIGHT, READ);
 
 include_once(__DIR__ . '/../inc/config.class.php');
 include_once(__DIR__ . '/../inc/correlation.class.php');
 
 if (isset($_POST['update'])) {
+    Session::checkRight(PluginIntegrasipamanProfile::RIGHT, UPDATE);
+
     // No manual Session::checkCSRF() here: GLPI's Kernel-level
     // CheckCsrfListener already validates the token for every non-GET
     // request before this legacy file is loaded. Since CSRF tokens are
@@ -116,8 +121,22 @@ if (isset($_POST['update'])) {
         trigger_error('config: post-save correlation resolve failed: ' . $e->getMessage(), E_USER_WARNING);
     }
 
+    // Suite contract: only a POST that came from the PGN Suite tab goes back
+    // to the tab. Redirecting unconditionally would send a plugin-right-only
+    // admin to Setup > General, which they cannot open.
+    if (!empty($_POST['_from_pgnsuite'])) {
+        Html::redirect(\GlpiPlugin\Pgnsuite\ConfigTab::getReturnUrl('integrasipaman'));
+    }
+
     Html::back();
 } else {
+    // The PGN Suite tab is the one visible entry point for anyone who can
+    // open Setup > General; this page stays reachable by URL for admins who
+    // hold only the plugin right.
+    if (Session::haveRight('config', READ)) {
+        Html::redirect(\GlpiPlugin\Pgnsuite\ConfigTab::getReturnUrl('integrasipaman'));
+    }
+
     Html::header(
         PluginIntegrasipamanConfig::getTypeName(),
         $_SERVER['PHP_SELF'],

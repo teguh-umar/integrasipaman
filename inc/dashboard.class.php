@@ -63,7 +63,7 @@ class PluginIntegrasipamanDashboard extends CommonGLPI
      * which apply to this class - it is not a searchable item type, just
      * a place to hang dashboard/menu hooks.
      *
-     * Gated on the same 'config'/UPDATE right front/pbi.php itself
+     * Gated on the same plugin right (READ) front/pbi.php itself
      * requires: the linked page surfaces PAM audit detail from a
      * separate database, so the menu entry is hidden entirely for users
      * who would only get denied - GLPI silently omits a menu category
@@ -74,7 +74,7 @@ class PluginIntegrasipamanDashboard extends CommonGLPI
      */
     public static function getMenuContent(): array
     {
-        if (!Session::haveRight('config', UPDATE)) {
+        if (!Session::haveRight(PluginIntegrasipamanProfile::RIGHT, READ)) {
             return [];
         }
 
@@ -83,6 +83,20 @@ class PluginIntegrasipamanDashboard extends CommonGLPI
             'page'  => Plugin::getWebDir('integrasipaman') . '/front/pbi.php',
             'icon'  => 'ti ti-terminal-2',
         ];
+    }
+
+    /**
+     * Whether the current user may see any JumpServer figure at all.
+     *
+     * Dashboard cards are rendered by core with no right check of their
+     * own, so before v2.0.0 every card provider handed PAM event counts to
+     * anyone allowed to edit a GLPI dashboard. Each provider now returns an
+     * empty result instead of querying, and getCardTypes() hides the cards
+     * from the "Add widget" panel entirely.
+     */
+    private static function canViewCards(): bool
+    {
+        return Session::haveRight(PluginIntegrasipamanProfile::RIGHT, READ);
     }
 
     /**
@@ -97,6 +111,10 @@ class PluginIntegrasipamanDashboard extends CommonGLPI
      */
     public static function getCardTypes(array $cards = []): array
     {
+        if (!self::canViewCards()) {
+            return $cards;
+        }
+
         $group = __('JumpServer Integration', 'integrasipaman');
 
         // Filter IDs this table supports (native GLPI dashboard "Add
@@ -256,6 +274,10 @@ CSS;
      */
     public static function provideTotalEvents(array $params = []): array
     {
+        if (!self::canViewCards()) {
+            return ['number' => 0, 'label' => __('JumpServer Total Events', 'integrasipaman'), 'icon' => 'ti ti-terminal-2'];
+        }
+
         return [
             'number' => self::countTotal(self::resolveWhereClause($params)),
             'label'  => __('JumpServer Total Events', 'integrasipaman'),
@@ -273,6 +295,10 @@ CSS;
      */
     public static function provideEventsByTypePie(array $params = []): array
     {
+        if (!self::canViewCards()) {
+            return ['data' => [], 'label' => __('JumpServer Events by Type - Pie', 'integrasipaman'), 'legend' => true, 'labels' => true, 'donut' => true];
+        }
+
         return [
             'data'   => self::eventsByTypeData($params),
             'label'  => __('JumpServer Events by Type - Pie', 'integrasipaman'),
@@ -292,6 +318,10 @@ CSS;
      */
     public static function provideEventsByTypeBar(array $params = []): array
     {
+        if (!self::canViewCards()) {
+            return ['data' => [], 'label' => __('JumpServer Events by Type - Bar', 'integrasipaman')];
+        }
+
         return [
             'data'  => self::eventsByTypeData($params),
             'label' => __('JumpServer Events by Type - Bar', 'integrasipaman'),
@@ -313,6 +343,10 @@ CSS;
      */
     public static function provideLoginFailures(array $params = []): array
     {
+        if (!self::canViewCards()) {
+            return ['number' => 0, 'label' => __('JumpServer Login Failures', 'integrasipaman'), 'icon' => 'ti ti-lock-exclamation'];
+        }
+
         $where = self::withEventTypeFilter($params, 'user_login_failed');
 
         return [
@@ -337,6 +371,10 @@ CSS;
      */
     public static function provideSessionSharing(array $params = []): array
     {
+        if (!self::canViewCards()) {
+            return ['number' => 0, 'label' => __('JumpServer Session Sharing', 'integrasipaman'), 'icon' => 'ti ti-users'];
+        }
+
         $where = self::withEventTypeFilter($params, 'session_share');
 
         return [

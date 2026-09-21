@@ -25,9 +25,14 @@
 include('../../../inc/includes.php');
 include_once(__DIR__ . '/../inc/config.class.php');
 include_once(__DIR__ . '/../inc/pbiconnection.class.php');
+include_once(__DIR__ . '/../inc/report.class.php');
 
 Session::checkLoginUser();
-Session::checkRight('config', UPDATE);
+// v2.0.0: gated on the plugin's own right (READ) instead of core `config`
+// UPDATE, which used to hand the whole of Setup > General to anyone who
+// needed these reports.
+include_once(__DIR__ . '/../inc/profile.class.php');
+Session::checkRight(PluginIntegrasipamanProfile::RIGHT, READ);
 
 /**
  * Render one PBI section: a heading, a one-line row-count KPI, and a
@@ -106,6 +111,24 @@ Html::header(
     'tools',
     'PluginIntegrasipamanDashboard'
 );
+
+$tab      = (($_GET['tab'] ?? 'insights') === 'report') ? 'report' : 'insights';
+$base_url = Plugin::getWebDir('integrasipaman') . '/front/pbi.php';
+
+echo '<ul class="nav nav-tabs mb-3">';
+echo '<li class="nav-item"><a class="nav-link' . ($tab === 'insights' ? ' active' : '')
+    . '" href="' . htmlescape($base_url . '?tab=insights') . '">'
+    . htmlescape(__('PBI Insights', 'integrasipaman')) . '</a></li>';
+echo '<li class="nav-item"><a class="nav-link' . ($tab === 'report' ? ' active' : '')
+    . '" href="' . htmlescape($base_url . '?tab=report') . '">'
+    . htmlescape(__('Command Audit Report', 'integrasipaman')) . '</a></li>';
+echo '</ul>';
+
+if ($tab === 'report') {
+    PluginIntegrasipamanReport::renderReportTab($_GET);
+    Html::footer();
+    return;
+}
 
 include_once(__DIR__ . '/../inc/dashboard.class.php');
 

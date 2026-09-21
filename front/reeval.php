@@ -18,7 +18,10 @@ include_once(__DIR__ . '/../inc/correlation.class.php');
 include_once(__DIR__ . '/../inc/riskeval.class.php');
 
 Session::checkLoginUser();
-Session::checkRight('config', UPDATE);
+// v2.0.0: gated on the plugin's own right (UPDATE) instead of core `config`
+// UPDATE - see inc/profile.class.php.
+include_once(__DIR__ . '/../inc/profile.class.php');
+Session::checkRight(PluginIntegrasipamanProfile::RIGHT, UPDATE);
 
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
     Html::displayErrorAndDie(__('This action must be triggered from the "Re-evaluate now" button on the configuration page.', 'integrasipaman'));

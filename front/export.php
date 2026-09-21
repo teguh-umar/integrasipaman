@@ -16,11 +16,19 @@
 
 include('../../../inc/includes.php');
 include_once(__DIR__ . '/../inc/dashboard.class.php');
+include_once(__DIR__ . '/../inc/exporter.class.php');
 
-// Any authenticated GLPI user may export this data - the same audience
-// that can already see it rendered live on the dashboard widget itself,
-// which has no stricter right of its own.
+// Gated to config-right holders, matching every other plugin page
+// (front/pbi.php, front/correlation.php, front/config.form.php). Previously
+// gated on checkLoginUser() alone (any authenticated user, including
+// Self-Service profiles, could export/print all PAM activity logs via a
+// direct URL) - tightened per suite-wide review, 2026-09-15.
 Session::checkLoginUser();
+// v2.0.0: gated on the plugin's own right (READ) instead of core `config`
+// UPDATE, which used to hand the whole of Setup > General to anyone who
+// needed these reports.
+include_once(__DIR__ . '/../inc/profile.class.php');
+Session::checkRight(PluginIntegrasipamanProfile::RIGHT, READ);
 
 $allowed_formats = ['view', 'csv', 'xls', 'pdf'];
 $format          = (string) ($_GET['format'] ?? 'view');
@@ -107,22 +115,6 @@ function jumpserver_export_row_values(array $row): array
 }
 
 /**
- * Neutralize spreadsheet "formula injection": a cell value coming from
- * JumpServer-supplied data (username, message, ...) that starts with
- * =, +, -, @ or a tab/CR is otherwise interpreted as a formula by Excel
- * when the file is opened, which is a well-known CSV/XLS export risk for
- * any application exporting untrusted text.
- */
-function jumpserver_export_sanitize_cell(string $value): string
-{
-    if ($value !== '' && strpbrk($value[0], "=+-@\t\r") !== false) {
-        return "'" . $value;
-    }
-
-    return $value;
-}
-
-/**
  * Stream the dataset as a real comma-separated CSV file, forced as a
  * download via a Content-Disposition attachment header.
  *
@@ -130,65 +122,15 @@ function jumpserver_export_sanitize_cell(string $value): string
  */
 function jumpserver_export_send_csv(array $rows, string $filename): void
 {
-    // $filename is built exclusively from a server-side timestamp and a
-    // fixed extension (see front/export.php above) - never from request
-    // input - so there is no header-injection surface here.
-    header('Content-Type: text/csv; charset=UTF-8');
-    header('Content-Disposition: attachment; filename="' . $filename . '"');
-    header('Pragma: no-cache');
-    header('Expires: 0');
-
-    $output = fopen('php://output', 'w');
-
-    // A UTF-8 BOM keeps Excel from misreading non-ASCII usernames/asset
-    // names when it opens the file.
-    fwrite($output, "\xEF\xBB\xBF");
-
-    fputcsv($output, jumpserver_export_columns());
-
-    foreach ($rows as $row) {
-        $values = array_map('jumpserver_export_sanitize_cell', jumpserver_export_row_values($row));
-        fputcsv($output, $values);
-    }
-
-    fclose($output);
-}
-
-/**
- * Build the shared, fully-escaped <table> markup used by both the Excel
- * export and the printable PDF view below.
- *
- * @param array<int, array<string, mixed>> $rows
- */
-function jumpserver_export_build_table_html(array $rows): string
-{
-    $html = '<table border="1" cellspacing="0" cellpadding="4"><thead><tr>';
-
-    foreach (jumpserver_export_columns() as $col) {
-        $html .= '<th>' . htmlescape($col) . '</th>';
-    }
-
-    $html .= '</tr></thead><tbody>';
-
-    if (empty($rows)) {
-        $html .= '<tr><td colspan="' . count(jumpserver_export_columns()) . '">'
-            . htmlescape(__('No data for the selected filters.', 'integrasipaman'))
-            . '</td></tr>';
-    }
-
-    foreach ($rows as $row) {
-        $html .= '<tr>';
-
-        foreach (jumpserver_export_row_values($row) as $value) {
-            $html .= '<td>' . htmlescape($value) . '</td>';
-        }
-
-        $html .= '</tr>';
-    }
-
-    $html .= '</tbody></table>';
-
-    return $html;
+    PluginIntegrasipamanExporter::sendCsv(
+        $filename,
+        jumpserver_export_columns(),
+        (static function () use ($rows) {
+            foreach ($rows as $row) {
+                yield jumpserver_export_row_values($row);
+            }
+        })()
+    );
 }
 
 /**
@@ -200,14 +142,16 @@ function jumpserver_export_build_table_html(array $rows): string
  */
 function jumpserver_export_send_xls(array $rows, string $filename): void
 {
-    header('Content-Type: application/vnd.ms-excel; charset=UTF-8');
-    header('Content-Disposition: attachment; filename="' . $filename . '"');
-    header('Pragma: no-cache');
-    header('Expires: 0');
-
-    echo '<!doctype html><html><head><meta charset="UTF-8"></head><body>';
-    echo jumpserver_export_build_table_html($rows);
-    echo '</body></html>';
+    PluginIntegrasipamanExporter::sendXls(
+        $filename,
+        jumpserver_export_columns(),
+        (static function () use ($rows) {
+            foreach ($rows as $row) {
+                yield jumpserver_export_row_values($row);
+            }
+        })(),
+        __('No data for the selected filters.', 'integrasipaman')
+    );
 }
 
 /**
@@ -220,44 +164,20 @@ function jumpserver_export_send_xls(array $rows, string $filename): void
  */
 function jumpserver_export_send_print_view(array $rows, array $options): void
 {
-    // Rendered inline in the browser, not force-downloaded: the point is
-    // a print preview the user can save as PDF from their browser's own
-    // print dialog.
-    header('Content-Type: text/html; charset=UTF-8');
-
-    $generated_at = date('Y-m-d H:i');
-
-    echo '<!doctype html><html><head><meta charset="UTF-8">';
-    echo '<title>' . htmlescape(__('JumpServer Activity Export', 'integrasipaman')) . '</title>';
-    echo '<style>
-        @page { size: A4 landscape; margin: 14mm; }
-        body { font-family: Arial, Helvetica, sans-serif; color: #16202e; margin: 0; padding: 24px; }
-        h1 { font-size: 18px; margin: 0 0 4px; }
-        .meta { font-size: 12px; color: #62708a; margin-bottom: 16px; }
-        table { width: 100%; border-collapse: collapse; font-size: 12px; }
-        th, td { border: 1px solid #c7ceda; padding: 6px 8px; text-align: left; }
-        th { background: #f6f8fc; text-transform: uppercase; letter-spacing: 0.03em; font-size: 10px; }
-        .print-bar { margin-bottom: 16px; }
-        .print-bar button { font-size: 13px; padding: 6px 14px; cursor: pointer; }
-        @media print { .print-bar { display: none; } body { padding: 0; } }
-    </style></head><body>';
-
-    echo '<div class="print-bar"><button type="button" onclick="window.print()">'
-        . htmlescape(__('Print / Save as PDF', 'integrasipaman')) . '</button></div>';
-
-    echo '<h1>' . htmlescape(__('JumpServer Activity Export', 'integrasipaman')) . '</h1>';
-    echo '<div class="meta">'
-        . htmlescape(sprintf(
+    PluginIntegrasipamanExporter::sendPrintView(
+        __('JumpServer Activity Export', 'integrasipaman'),
+        sprintf(
             __('Event filter: %1$s - Date range: %2$s - Generated %3$s', 'integrasipaman'),
-            $options['filter_event'],
-            $options['date_preset'],
-            $generated_at
-        ))
-        . '</div>';
-
-    echo jumpserver_export_build_table_html($rows);
-
-    echo '</body></html>';
+            $options['filter_event'], $options['date_preset'], date('Y-m-d H:i')
+        ),
+        jumpserver_export_columns(),
+        (static function () use ($rows) {
+            foreach ($rows as $row) {
+                yield jumpserver_export_row_values($row);
+            }
+        })(),
+        __('No data for the selected filters.', 'integrasipaman')
+    );
 }
 
 /**

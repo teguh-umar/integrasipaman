@@ -17,7 +17,10 @@ include('../../../inc/includes.php');
 include_once(__DIR__ . '/../inc/correlation.class.php');
 
 Session::checkLoginUser();
-Session::checkRight('config', UPDATE);
+// v2.0.0: gated on the plugin's own right (UPDATE) instead of core `config`
+// UPDATE - see inc/profile.class.php.
+include_once(__DIR__ . '/../inc/profile.class.php');
+Session::checkRight(PluginIntegrasipamanProfile::RIGHT, UPDATE);
 
 $self = Plugin::getWebDir('integrasipaman') . '/front/correlation.php';
 

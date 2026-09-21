@@ -23,7 +23,7 @@
 // row in glpi_plugins. Confirmed by comparison against a working
 // reference plugin on the target instance, which has no such guard.
 
-define('PLUGIN_INTEGRASIPAMAN_VERSION', '1.11.0');
+define('PLUGIN_INTEGRASIPAMAN_VERSION', '2.0.0');
 
 // Minimum GLPI version, inclusive
 define('PLUGIN_INTEGRASIPAMAN_MIN_GLPI', '10.0.0');
@@ -60,8 +60,27 @@ function plugin_init_integrasipaman(): void
         Plugin::registerClass('PluginIntegrasipamanAssetMap');
         Plugin::registerClass('PluginIntegrasipamanUserMap');
 
+        // Rights matrix tab on Administration > Profiles. The class must be
+        // loaded before registerClass(), which resolves it by name.
+        include_once(__DIR__ . '/inc/profile.class.php');
+        Plugin::registerClass('PluginIntegrasipamanProfile', ['addtabon' => 'Profile']);
+
+        // Shared "PGN Suite" tab on Setup > General (suite contract v1). The
+        // class ships byte-identical in every participating plugin; whichever
+        // active plugin loads first supplies it. class_exists(..., false) on
+        // purpose - the autoloader would go looking for a plugins/pgnsuite/
+        // that does not exist.
+        if (!class_exists(\GlpiPlugin\Pgnsuite\ConfigTab::class, false)) {
+            require_once __DIR__ . '/lib/pgnsuite/ConfigTab.php';
+        }
+        \GlpiPlugin\Pgnsuite\ConfigTab::register();
+        $PLUGIN_HOOKS[\GlpiPlugin\Pgnsuite\ConfigTab::HOOK]['integrasipaman'] =
+            'PluginIntegrasipamanConfig::suiteSection';
+
         // Expose a "Configure" link for this plugin under Setup > Plugins.
-        if (Session::haveRight('config', UPDATE)) {
+        // Gated on the plugin's own right now, so a PAM administrator without
+        // core Setup access still gets the link.
+        if (Session::haveRight(PluginIntegrasipamanProfile::RIGHT, READ)) {
             $PLUGIN_HOOKS['config_page']['integrasipaman'] = plugin_integrasipaman_options()['page'];
         }
 

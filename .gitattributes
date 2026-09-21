@@ -1,2 +1,4 @@
 * text=auto eol=lf
 *.php text eol=lf
+
+lib/pgnsuite/ConfigTab.php -text

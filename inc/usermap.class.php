@@ -31,7 +31,7 @@ class PluginIntegrasipamanUserMap extends CommonDBTM
 
     public static function canView(): bool
     {
-        return Session::haveRight('config', UPDATE);
+        return Session::haveRight(PluginIntegrasipamanProfile::RIGHT, READ);
     }
 
     public static function canCreate(): bool
@@ -42,12 +42,12 @@ class PluginIntegrasipamanUserMap extends CommonDBTM
 
     public static function canUpdate(): bool
     {
-        return Session::haveRight('config', UPDATE);
+        return Session::haveRight(PluginIntegrasipamanProfile::RIGHT, UPDATE);
     }
 
     public static function canPurge(): bool
     {
-        return Session::haveRight('config', UPDATE);
+        return Session::haveRight(PluginIntegrasipamanProfile::RIGHT, UPDATE);
     }
 
     /**

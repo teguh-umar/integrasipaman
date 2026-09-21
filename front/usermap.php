@@ -11,7 +11,11 @@
 
 include('../../../inc/includes.php');
 
-Session::checkRight('config', UPDATE);
+// v2.0.0: gated on the plugin's own right (READ) instead of core `config`
+// UPDATE, which used to hand the whole of Setup > General to anyone who
+// needed these reports.
+include_once(__DIR__ . '/../inc/profile.class.php');
+Session::checkRight(PluginIntegrasipamanProfile::RIGHT, READ);
 
 Html::header(
     PluginIntegrasipamanUserMap::getTypeName(2),

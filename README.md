@@ -33,6 +33,31 @@ evaluation and reporting on top of it.
   create/update is pushed to JumpServer.
 - **PBI Insights page** — an optional reporting view backed by a separate
   read-only reporting database.
+- **Command Audit Report** — a period-scoped reporting tab (month picker or a
+  custom range) with a KPI strip, five summary tables (per user, per asset,
+  per risk category, top commands, priority/note breakdown), a sortable and
+  paginated high-risk detail table, and CSV / Excel / print export for each,
+  plus a full command-log CSV.
+
+## Rights
+
+The plugin owns a single GLPI right, `plugin_integrasipaman_config`, with its
+rights matrix on **Administration → Profiles → JumpServer Integration**:
+
+| Level | Grants |
+|---|---|
+| `READ` | PBI Insights, Command Audit Report, activity log and all exports, asset/user mapping lists, dashboard cards |
+| `UPDATE` | the settings form, *Re-evaluate now*, month backfill, editing a mapping |
+
+Before v2.0.0 every page was gated on core `config` UPDATE, so anyone who
+needed the reports also had to be given all of GLPI's Setup. Upgrading seeds
+the new right from each profile's existing core `config` mask, so no profile
+loses access; see [docs/v2.0.0-deploy-checklist.md](docs/v2.0.0-deploy-checklist.md).
+
+The settings form also renders as a section of the shared **PGN Suite** tab on
+Setup → General (`lib/pgnsuite/ConfigTab.php`, shipped byte-identical across
+the PGN plugin suite). The standalone configuration page stays reachable for
+administrators who hold the plugin right but not core `config`.
 
 ## Requirements
 
@@ -81,6 +106,11 @@ inc/
   assetsync.class.php    GLPI Computer -> JumpServer sync
   dashboard.class.php    dashboard cards + Tools-menu entry
   pbiconnection.class.php read-only reporting-DB connection
+  report.class.php       Command Audit Report datasets + tab rendering
+  exporter.class.php     shared CSV / Excel / print writer
+  profile.class.php      plugin right + Administration > Profiles matrix
+lib/
+  pgnsuite/ConfigTab.php shared "PGN Suite" tab on Setup > General
 front/
   config.form.php    configuration page
   backfill.php        manual month backfill trigger
@@ -89,8 +119,10 @@ front/
   assetmap.php / assetmap.form.php   asset-mapping list + edit
   usermap.php / usermap.form.php     user-mapping list + edit
   export.php          activity-log view
-  pbi.php             PBI Insights page
+  pbi.php             PBI Insights + Command Audit Report tabs
+  reportexport.php    Command Audit Report download controller
 tests/               offline stub tests (run with a bare PHP CLI)
+docs/                deployment & verification checklists
 ```
 
 ## License

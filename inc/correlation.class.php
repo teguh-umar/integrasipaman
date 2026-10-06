@@ -79,6 +79,62 @@ class PluginIntegrasipamanCorrelation extends CommonGLPI
         return false;
     }
 
+    /**
+     * Whether an asset name marks it as a staging box.
+     *
+     * Substring, case-insensitive, on the operator's own convention. It is
+     * deliberately not a regex with word boundaries: the names in this estate
+     * carry the marker in several shapes (APP-STG-01, db-stag-7), and a
+     * false positive costs a staging-looking box being called development,
+     * which is what it would be called anyway if nothing else matched.
+     */
+    public static function isStagingName(string $name): bool
+    {
+        return stripos($name, 'STG') !== false || stripos($name, 'STAG') !== false;
+    }
+
+    /**
+     * The three-valued classification for one address.
+     *
+     * Production wins a tie deliberately: for an audit tool, calling a
+     * production box "development" understates every command run on it,
+     * while the reverse only overstates. Production is also established
+     * from three sources (GLPI ipnetworks, addressings, prefixes) and
+     * development from one, so a development match is the weaker claim.
+     *
+     * Returns '' rather than guessing. An empty string here means "nobody
+     * has stated this yet", which is a work-queue entry and NOT a class.
+     *
+     * @param array<int,string> $prod_prefixes
+     * @param array<int,string> $dev_prefixes
+     */
+    public static function classFor(string $ip, array $prod_prefixes, array $dev_prefixes): string
+    {
+        if (self::prefixMatch($ip, $prod_prefixes)) {
+            return 'production';
+        }
+        if (self::prefixMatch($ip, $dev_prefixes)) {
+            return 'development';
+        }
+
+        return '';
+    }
+
+    /**
+     * Whether a first resolve's verdict really differs from what the prefix
+     * fallback would have said at evaluation time.
+     *
+     * A function rather than an inline comparison because the inline one it
+     * replaces was a boolean inequality. Left as `!==` on strings it is
+     * still "correct" and still wrong in effect: it fires on every run for
+     * rows the fallback could never have classified, bumping the generation
+     * forever and re-evaluating the whole command history each time.
+     */
+    public static function firstResolveDiffers(string $resolved, string $fallback): bool
+    {
+        return $resolved !== $fallback;
+    }
+
     // ---------------------------------------------------------------------
     // Resolver
     // ---------------------------------------------------------------------
@@ -97,12 +153,54 @@ class PluginIntegrasipamanCorrelation extends CommonGLPI
     {
         $deadline = $max_seconds > 0 ? microtime(true) + $max_seconds : 0.0;
 
+        // v4.0.0: one pass per connection. An asset string or a user name
+        // means something only inside the JumpServer it came from, so each
+        // connection has its own map rows and matches only the Computers in
+        // its own scope. The budget is shared: a connection the deadline
+        // cuts short is picked up by the next run, like leftover rows.
+        if (PluginIntegrasipamanConnection::all() === []) {
+            return self::resolveCurrent($deadline);
+        }
+
+        $totals = [
+            'assets' => ['total' => 0, 'resolved' => 0, 'prefix_fallback' => 0, 'manual' => 0, 'unresolved' => 0],
+            'users'  => ['total' => 0, 'resolved' => 0, 'name_fallback' => 0, 'manual' => 0, 'unresolved' => 0],
+        ];
+        $runs = PluginIntegrasipamanConnection::each(static fn () => self::resolveCurrent($deadline));
+        foreach ($runs as $run) {
+            if ($run['error'] !== '') {
+                trigger_error(
+                    sprintf('correlation: connection "%s" failed: %s', $run['connection']->label(), $run['error']),
+                    E_USER_WARNING
+                );
+                continue;
+            }
+            foreach ($run['result'] as $kind => $stats) {
+                foreach ($stats as $key => $value) {
+                    $totals[$kind][$key] = ($totals[$kind][$key] ?? 0) + $value;
+                }
+            }
+        }
+
+        return $totals;
+    }
+
+    /**
+     * resolveAll() for the current connection - or, on an instance with no
+     * connection at all, for whatever rows there are.
+     *
+     * @return array{assets: array<string,int>, users: array<string,int>}
+     */
+    private static function resolveCurrent(float $deadline): array
+    {
         self::discoverAssets();
         self::discoverUsers();
 
         $cfg  = Config::getConfigurationValues(PluginIntegrasipamanConfig::CONFIG_CONTEXT);
         $mode = (string) ($cfg['correlation_match_mode'] ?? 'ip_only');
-        if (!in_array($mode, ['ip_only', 'name_only', 'hybrid'], true)) {
+        // Same list the dropdown and the save controller use - see
+        // PluginIntegrasipamanConfig::MATCH_MODES.
+        if (!in_array($mode, PluginIntegrasipamanConfig::MATCH_MODES, true)) {
             $mode = 'ip_only';
         }
 
@@ -110,20 +208,34 @@ class PluginIntegrasipamanCorrelation extends CommonGLPI
         $ranges    = self::loadProductionRanges(self::idList((string) ($cfg['correlation_production_addressings'] ?? '')));
         $group_ids = self::idList((string) ($cfg['correlation_admin_groups'] ?? ''));
         $prefixes  = PluginIntegrasipamanRiskEval::parseList((string) ($cfg['jumpserver_production_ip_prefixes'] ?? ''));
+        $dev_prefixes = PluginIntegrasipamanRiskEval::parseList((string) ($cfg['jumpserver_development_ip_prefixes'] ?? ''));
         $admins    = PluginIntegrasipamanRiskEval::parseList((string) ($cfg['jumpserver_admin_users'] ?? ''));
 
-        // A classification-relevant change (is_production / is_admin flip,
+        // A classification-relevant change (asset_class / is_admin flip,
         // or a first resolve whose verdict differs from what the prefix /
         // admin fallback would have said) bumps the maps generation, which
         // is what rulesHash() folds in - so a plain new asset string does
         // NOT re-evaluate all history, only a real verdict change does.
         $bump   = false;
-        $assets = self::resolveAssetRows($nets, $ranges, $prefixes, $mode, $deadline, $bump);
+        self::repairDanglingLinks();
+
+        $assets = self::resolveAssetRows($nets, $ranges, $prefixes, $dev_prefixes, $mode, $deadline, $bump);
         $users  = self::resolveUserRows($group_ids, $admins, $deadline, $bump);
 
         if ($bump) {
             self::bumpGeneration();
         }
+
+        // Its own pass, after resolveAssetRows() so it sees both the
+        // repairDanglingLinks() repair above and the links freshly resolved
+        // this run - and deliberately NOT folded into the row loop, which
+        // skips is_manual rows before this could ever run for them.
+        self::refreshIpMismatch();
+
+        // v3.11.0: a map row follows the Computer it is linked to, so after
+        // the links have settled, the rows that carry one take its entity
+        // (inside the connection's scope; the connection's own otherwise).
+        PluginIntegrasipamanConnection::syncLinked();
 
         return ['assets' => $assets, 'users' => $users];
     }
@@ -151,13 +263,13 @@ class PluginIntegrasipamanCorrelation extends CommonGLPI
         return mb_strtolower(rtrim($s));
     }
 
-    /** @return array<string,bool> asset string => is_production, every row. */
-    public static function assetProdMap(): array
+    /** @return array<string,string> asset string => asset_class, every row. */
+    public static function assetClassMap(): array
     {
         global $DB;
         $out = [];
-        foreach ($DB->request(['SELECT' => ['asset', 'is_production'], 'FROM' => self::ASSETMAP_TABLE]) as $r) {
-            $out[(string) $r['asset']] = (bool) $r['is_production'];
+        foreach ($DB->request(['SELECT' => ['asset', 'asset_class'], 'FROM' => self::ASSETMAP_TABLE, 'WHERE' => PluginIntegrasipamanConnection::ownRows()]) as $r) {
+            $out[(string) $r['asset']] = (string) ($r['asset_class'] ?? '');
         }
         return $out;
     }
@@ -167,7 +279,7 @@ class PluginIntegrasipamanCorrelation extends CommonGLPI
     {
         global $DB;
         $out = [];
-        foreach ($DB->request(['SELECT' => ['jms_user', 'is_admin'], 'FROM' => self::USERMAP_TABLE]) as $r) {
+        foreach ($DB->request(['SELECT' => ['jms_user', 'is_admin'], 'FROM' => self::USERMAP_TABLE, 'WHERE' => PluginIntegrasipamanConnection::ownRows()]) as $r) {
             $out[(string) $r['jms_user']] = (bool) $r['is_admin'];
         }
         return $out;
@@ -180,10 +292,10 @@ class PluginIntegrasipamanCorrelation extends CommonGLPI
         global $DB;
 
         $known = [];
-        foreach ($DB->request(['SELECT' => ['asset'], 'FROM' => self::ASSETMAP_TABLE]) as $r) {
+        foreach ($DB->request(['SELECT' => ['asset'], 'FROM' => self::ASSETMAP_TABLE, 'WHERE' => PluginIntegrasipamanConnection::ownRows()]) as $r) {
             $known[self::dedupKey((string) $r['asset'])] = true;
         }
-        foreach ($DB->request(['SELECT' => ['asset'], 'DISTINCT' => true, 'FROM' => self::COMMANDS_TABLE]) as $r) {
+        foreach ($DB->request(['SELECT' => ['asset'], 'DISTINCT' => true, 'FROM' => self::COMMANDS_TABLE, 'WHERE' => PluginIntegrasipamanConnection::ownRows()]) as $r) {
             $asset = (string) $r['asset'];
             $key   = self::dedupKey($asset);
             if ($asset === '' || isset($known[$key])) {
@@ -197,7 +309,7 @@ class PluginIntegrasipamanCorrelation extends CommonGLPI
                     'parsed_ip'      => PluginIntegrasipamanRiskEval::extractIp($asset),
                     'resolve_method' => 'unresolved',
                     'date_creation'  => $_SESSION['glpi_currenttime'] ?? date('Y-m-d H:i:s'),
-                ])) {
+                ] + PluginIntegrasipamanConnection::stamp())) {
                     trigger_error(sprintf('correlation: could not insert assetmap row for "%s": %s', $asset, $DB->error()), E_USER_WARNING);
                 }
             } catch (\Throwable $e) {
@@ -211,10 +323,10 @@ class PluginIntegrasipamanCorrelation extends CommonGLPI
         global $DB;
 
         $known = [];
-        foreach ($DB->request(['SELECT' => ['jms_user'], 'FROM' => self::USERMAP_TABLE]) as $r) {
+        foreach ($DB->request(['SELECT' => ['jms_user'], 'FROM' => self::USERMAP_TABLE, 'WHERE' => PluginIntegrasipamanConnection::ownRows()]) as $r) {
             $known[self::dedupKey((string) $r['jms_user'])] = true;
         }
-        foreach ($DB->request(['SELECT' => ['jms_user'], 'DISTINCT' => true, 'FROM' => self::COMMANDS_TABLE]) as $r) {
+        foreach ($DB->request(['SELECT' => ['jms_user'], 'DISTINCT' => true, 'FROM' => self::COMMANDS_TABLE, 'WHERE' => PluginIntegrasipamanConnection::ownRows()]) as $r) {
             $jms_user = (string) $r['jms_user'];
             $key      = self::dedupKey($jms_user);
             if ($jms_user === '' || isset($known[$key])) {
@@ -227,7 +339,7 @@ class PluginIntegrasipamanCorrelation extends CommonGLPI
                     'parsed_login'   => self::parseLogin($jms_user),
                     'resolve_method' => 'unresolved',
                     'date_creation'  => $_SESSION['glpi_currenttime'] ?? date('Y-m-d H:i:s'),
-                ])) {
+                ] + PluginIntegrasipamanConnection::stamp())) {
                     trigger_error(sprintf('correlation: could not insert usermap row for "%s": %s', $jms_user, $DB->error()), E_USER_WARNING);
                 }
             } catch (\Throwable $e) {
@@ -329,17 +441,148 @@ class PluginIntegrasipamanCorrelation extends CommonGLPI
     // --- asset resolution ---------------------------------------------
 
     /**
+     * Clear any assetmap link whose Computer no longer exists.
+     *
+     * Its own pass, and deliberately NOT a branch inside resolveAssetRow():
+     * that function is never reached for is_manual = 1 rows, and the id it
+     * would test was just computed by findComputer(), which cannot return
+     * an id that does not exist. Locked rows are the only place a dangling
+     * link can survive - nothing else revisits them - so a repair that
+     * skipped them would repair only the rows that were never broken.
+     *
+     * Clearing to 0 is honest. Re-pointing the link at a plausible-looking
+     * Computer would be a guess wearing a fact's clothes.
+     *
+     * One query for the live ids, then membership - not a query per row.
+     * This runs at the top of every resolveAll(), which the cron calls
+     * every 15 minutes; a per-row existence check would be ~500 queries a
+     * run on this estate, the same regression the mismatch pass beside this
+     * one already rejected once.
+     */
+    public static function repairDanglingLinks(): void
+    {
+        global $DB;
+
+        // EXISTENCE ONLY - is_deleted and is_template are deliberately
+        // absent here, while findComputer() deliberately filters on both.
+        // The two are different jobs and the spec names them separately
+        // (section 7): the join in findComputer() stops a bad BINDING being
+        // made; this pass repairs a binding whose target was PURGED. The
+        // evidence behind it is an id that returned "Empty set", not one in
+        // the trash.
+        //
+        // A soft delete is routine and reversible; a purge is not. Add
+        // is_deleted back and a five-second trip through the GLPI trash
+        // silently destroys an operator's hand-picked link on a LOCKED row -
+        // and because nothing ever revisits a locked row, restoring the
+        // Computer does not restore the link. No note, no log line, gone.
+        $live = [];
+        foreach ($DB->request([
+            'SELECT' => ['id'],
+            'FROM'   => 'glpi_computers',
+        ]) as $r) {
+            $live[(int) $r['id']] = true;
+        }
+
+        foreach ($DB->request(['FROM' => self::ASSETMAP_TABLE, 'WHERE' => PluginIntegrasipamanConnection::ownRows()]) as $row) {
+            $computers_id = (int) ($row['computers_id'] ?? 0);
+            if ($computers_id > 0 && !isset($live[$computers_id])) {
+                $DB->update(self::ASSETMAP_TABLE, ['computers_id' => 0], ['id' => (int) $row['id']]);
+            }
+        }
+    }
+
+    /**
+     * Recompute ip_mismatch for every row, LOCKED ROWS INCLUDED.
+     *
+     * Deliberately its own pass rather than a branch inside
+     * resolveAssetRow(), which the is_manual early return never reaches.
+     * A lock is a decision about CLASSIFICATION; it says nothing about
+     * whether the linked Computer still carries this address.
+     *
+     * The flag is a SIGNAL. It never touches asset_class, priority or
+     * catatan - both inventories go stale in different cases, so the only
+     * honest statement is "these disagree, look", and letting that move a
+     * score would let a blocked agent port change a risk verdict.
+     *
+     * AGED-OUT ROWS ARE FORCED TO 0, not skipped. Spec section 5: the flag
+     * is skipped "only for aged-out rows - comparing an address that PAMAN
+     * no longer lists produces noise". Leaving the stored value alone would
+     * FREEZE whatever it last held, and a flag that outlives the check that
+     * set it is the sticky flag section 9 forbids and section 4 rules out -
+     * within a few weeks the count labelled "investigate" would fill with
+     * machines that are gone and whose addresses cannot agree.
+     *
+     * NULL is computed normally. NULL means nobody has asked yet, which is
+     * our own ignorance, not a finding - and discoverAssets() adds a row the
+     * moment a command reaches a new asset while the host list is pulled
+     * weekly, so a genuinely live, genuinely mismatched asset would be
+     * silenced for up to seven days.
+     */
+    public static function refreshIpMismatch(): void
+    {
+        global $DB;
+
+        $aged_out_before = date(
+            'Y-m-d H:i:s',
+            strtotime('-' . PluginIntegrasipamanEntitlement::STALE_DAYS . ' days')
+        );
+
+        // Every address recorded against any Computer, in ONE query.
+        // (Scoped by mainitemtype only - it is not narrowed to the Computers
+        // assetmap happens to link, because narrowing it would cost the
+        // per-row work this single query exists to avoid.)
+        //
+        // computerIps() costs a query per Computer, and this pass visits
+        // every row on a table of ~615 - so calling it per row would put
+        // ~500 queries on a path that runs every 15 minutes. That is a
+        // performance regression shipped in the name of reuse.
+        $ips_by_computer = [];
+        foreach ($DB->request([
+            'SELECT' => ['mainitems_id', 'name'],
+            'FROM'   => 'glpi_ipaddresses',
+            'WHERE'  => ['mainitemtype' => 'Computer'],
+        ]) as $r) {
+            $addr = (string) ($r['name'] ?? '');
+            if ($addr !== '') {
+                $ips_by_computer[(int) $r['mainitems_id']][] = $addr;
+            }
+        }
+
+        foreach ($DB->request(['FROM' => self::ASSETMAP_TABLE, 'WHERE' => PluginIntegrasipamanConnection::ownRows()]) as $row) {
+            $id  = (int) ($row['id'] ?? 0);
+            $cid = (int) ($row['computers_id'] ?? 0);
+            $ip  = (string) ($row['parsed_ip'] ?? '');
+
+            // Aged out of the PAMAN host list: PAMAN no longer lists this
+            // asset at all, so its address cannot agree with anything and
+            // the comparison is noise. Forced to 0, never left alone - see
+            // the note above about sticky flags.
+            $checked  = (string) ($row['live_checked_at'] ?? '');
+            $aged_out = $checked !== '' && $checked < $aged_out_before;
+
+            // No link or no address means there is nothing to disagree
+            // about - not that the two agree.
+            $mismatch = (!$aged_out && $cid > 0 && $ip !== '' && !in_array($ip, $ips_by_computer[$cid] ?? [], true)) ? 1 : 0;
+
+            if ($mismatch !== (int) ($row['ip_mismatch'] ?? 0)) {
+                $DB->update(self::ASSETMAP_TABLE, ['ip_mismatch' => $mismatch], ['id' => $id]);
+            }
+        }
+    }
+
+    /**
      * @param array<int, array{id:int,net:int,mask:int}>  $nets
      * @param array<int, array{id:int,begin:int,end:int}> $ranges
      * @param array<int,string>                           $prefixes
      * @return array<string,int>
      */
-    private static function resolveAssetRows(array $nets, array $ranges, array $prefixes, string $mode, float $deadline, bool &$bump): array
+    private static function resolveAssetRows(array $nets, array $ranges, array $prefixes, array $dev_prefixes, string $mode, float $deadline, bool &$bump): array
     {
         global $DB;
         $stats = ['total' => 0, 'resolved' => 0, 'prefix_fallback' => 0, 'manual' => 0, 'unresolved' => 0];
 
-        foreach ($DB->request(['FROM' => self::ASSETMAP_TABLE]) as $row) {
+        foreach ($DB->request(['FROM' => self::ASSETMAP_TABLE, 'WHERE' => PluginIntegrasipamanConnection::ownRows()]) as $row) {
             $stats['total']++;
             if ((int) ($row['is_manual'] ?? 0) === 1) {
                 $stats['manual']++;
@@ -349,19 +592,24 @@ class PluginIntegrasipamanCorrelation extends CommonGLPI
                 break;
             }
             try {
-                $vals = self::resolveAssetRow($row, $nets, $ranges, $prefixes, $mode);
+                $vals = self::resolveAssetRow($row, $nets, $ranges, $prefixes, $dev_prefixes, $mode);
             } catch (\Throwable $e) {
                 trigger_error(sprintf('correlation: asset row %d failed: %s', (int) $row['id'], $e->getMessage()), E_USER_WARNING);
                 continue;
             }
 
             $first           = ((string) ($row['last_resolved_at'] ?? '')) === '';
-            $verdict_changed = self::writeRow(self::ASSETMAP_TABLE, (int) $row['id'], $vals, $row, 'is_production');
+            // writeRow() compares with (string) casts, so a string verdict
+            // column needs no change there.
+            $verdict_changed = self::writeRow(self::ASSETMAP_TABLE, (int) $row['id'], $vals, $row, 'asset_class');
             if ($verdict_changed && !$first) {
                 // An established row's verdict flipped -> re-evaluate.
                 $bump = true;
             } elseif ($first
-                && (int) $vals['is_production'] !== (self::prefixMatch((string) ($row['parsed_ip'] ?? ''), $prefixes) ? 1 : 0)) {
+                && self::firstResolveDiffers(
+                    (string) $vals['asset_class'],
+                    self::classFor((string) ($row['parsed_ip'] ?? ''), $prefixes, $dev_prefixes)
+                )) {
                 // First real resolve whose verdict differs from what the
                 // prefix fallback (what Piece 2 used at eval time) would
                 // say. A first resolve that agrees with the fallback needs
@@ -388,14 +636,21 @@ class PluginIntegrasipamanCorrelation extends CommonGLPI
      * @param array<int,string>                            $prefixes
      * @return array<string,mixed> columns to write
      */
-    private static function resolveAssetRow(array $row, array $nets, array $ranges, array $prefixes, string $mode): array
+    private static function resolveAssetRow(array $row, array $nets, array $ranges, array $prefixes, array $dev_prefixes, string $mode): array
     {
         $ip   = (string) ($row['parsed_ip'] ?? '');
         $name = (string) ($row['parsed_name'] ?? '');
 
-        $computers_id = self::findComputer($ip, $name);
+        // hybrid_name looks the Computer up by NAME first and stops there if
+        // it finds one - the parsed IP is never consulted for the match. This
+        // exists because findComputer()'s IP-first order silently mis-maps
+        // whenever two Computers share an IP in GLPI: it takes the lowest id
+        // and never checks whether the asset's own name matches the other one.
+        $computers_id = $mode === 'hybrid_name'
+            ? self::findComputer($ip, $name, true)
+            : self::findComputer($ip, $name);
 
-        if ($mode === 'name_only') {
+        if ($mode === 'name_only' || ($mode === 'hybrid_name' && $computers_id > 0)) {
             [$prod, $ref_id, $src] = self::testProduction($computers_id > 0 ? self::computerIps($computers_id) : [], $nets, $ranges);
             $via = 'computer_ip';
         } else {
@@ -408,37 +663,107 @@ class PluginIntegrasipamanCorrelation extends CommonGLPI
         }
 
         if ($prod) {
-            return self::assetVals($computers_id, $ref_id, 1, $via);
+            return self::assetVals($computers_id, $ref_id, 'production', $via);
         }
-        if (self::prefixMatch($ip, $prefixes)) {
-            return self::assetVals($computers_id, 0, 1, 'prefix_fallback');
+
+        // No GLPI-native production evidence. Fall back to the prefix
+        // lists, which is the only source development has at all.
+        $class = self::classFor($ip, $prefixes, $dev_prefixes);
+        if ($class === 'production') {
+            return self::assetVals($computers_id, 0, 'production', 'prefix_fallback');
         }
-        return self::assetVals($computers_id, 0, 0, 'unresolved');
+        if ($class === 'development') {
+            return self::assetVals($computers_id, 0, 'development', 'prefix_fallback');
+        }
+
+        // Staging boxes, by name, and ONLY where nothing else decided.
+        // They are deleted after UAT and deleting them needs no approval, so
+        // they should generate neither mapping work nor alerts (user, 2026-09-27).
+        //
+        // Stating them as development rather than leaving them unmapped is the
+        // point: an asset with no class scores MEDIUM, so "just don't map them"
+        // would make staging the loudest thing in the report instead of the
+        // quietest. A staging box genuinely IS non-production, so this is a
+        // statement, not a convenience.
+        //
+        // Deliberately last: production evidence wins. A production box whose
+        // name happens to carry STG would score LOW if the name won, and a
+        // production asset scored LOW is blindness - the exact failure this
+        // feature exists to remove. A staging box wrongly called production
+        // only costs noise. Same asymmetry that decides the prefix tie-break.
+        if (self::isStagingName($name)) {
+            return self::assetVals($computers_id, 0, 'development', 'staging_name');
+        }
+
+        return self::assetVals($computers_id, 0, '', 'unresolved');
     }
 
     /** @return array<string,mixed> */
-    private static function assetVals(int $computers_id, int $ipnetworks_id, int $is_production, string $method): array
+    private static function assetVals(int $computers_id, int $ipnetworks_id, string $asset_class, string $method): array
     {
         return [
             'computers_id'     => $computers_id,
             'ipnetworks_id'    => $ipnetworks_id,
-            'is_production'    => $is_production,
+            'asset_class'      => $asset_class,
             'resolve_method'   => $method,
             'last_resolved_at' => $_SESSION['glpi_currenttime'] ?? date('Y-m-d H:i:s'),
         ];
     }
 
-    /** GLPI Computer by IP, else by name (lowest id). 0 = none. */
-    private static function findComputer(string $ip, string $name): int
+    /**
+     * GLPI Computer by IP, else by name (lowest id). 0 = none.
+     *
+     * $name_first flips the order: name, then IP. Prefer it when the
+     * instance has Computers sharing an IP - an IP-first match there picks
+     * the lowest id and never notices that the asset's name identifies a
+     * different Computer exactly. Either order still falls back to the
+     * other, so an asset whose name matches nothing is unaffected.
+     *
+     * Both lookups take the lowest id when several rows match, so duplicate
+     * NAMES have the same failure mode as duplicate IPs, just more rarely.
+     */
+    private static function findComputer(string $ip, string $name, bool $name_first = false): int
     {
         global $DB;
 
+        // v4.0.0: only a Computer inside the connection's scope can be the
+        // match. Two subsidiaries reuse private address ranges and host
+        // names; without this, another company's Computer with the same IP
+        // would be linked, and its entity's users would then be shown this
+        // JumpServer's sessions on it. Unrestricted only where no connection
+        // is current (an instance with none).
+        $connection      = PluginIntegrasipamanConnection::current();
+        $in_scope        = $connection === null ? [] : ['entities_id' => $connection->scope()];
+        $in_scope_joined = $connection === null ? [] : ['glpi_computers.entities_id' => $connection->scope()];
+
+        if ($name_first && $name !== '') {
+            foreach ($DB->request([
+                'SELECT' => ['id'],
+                'FROM'   => 'glpi_computers',
+                'WHERE'  => ['name' => $name, 'is_deleted' => 0, 'is_template' => 0] + $in_scope,
+                'ORDER'  => 'id ASC',
+                'LIMIT'  => 1,
+            ]) as $r) {
+                return (int) $r['id'];
+            }
+        }
+
         if ($ip !== '') {
             foreach ($DB->request([
-                'SELECT' => ['mainitems_id'],
-                'FROM'   => 'glpi_ipaddresses',
-                'WHERE'  => ['mainitemtype' => 'Computer', 'name' => $ip],
-                'ORDER'  => 'mainitems_id ASC',
+                'SELECT'     => ['glpi_ipaddresses.mainitems_id'],
+                'FROM'       => 'glpi_ipaddresses',
+                'INNER JOIN' => [
+                    'glpi_computers' => ['ON' => [
+                        'glpi_computers'  => 'id',
+                        'glpi_ipaddresses' => 'mainitems_id',
+                        ['AND' => [
+                            'glpi_computers.is_deleted'  => 0,
+                            'glpi_computers.is_template' => 0,
+                        ]],
+                    ]],
+                ],
+                'WHERE'  => ['glpi_ipaddresses.mainitemtype' => 'Computer', 'glpi_ipaddresses.name' => $ip] + $in_scope_joined,
+                'ORDER'  => 'glpi_ipaddresses.mainitems_id ASC',
                 'LIMIT'  => 1,
             ]) as $r) {
                 if ((int) $r['mainitems_id'] > 0) {
@@ -450,7 +775,7 @@ class PluginIntegrasipamanCorrelation extends CommonGLPI
             foreach ($DB->request([
                 'SELECT' => ['id'],
                 'FROM'   => 'glpi_computers',
-                'WHERE'  => ['name' => $name, 'is_deleted' => 0, 'is_template' => 0],
+                'WHERE'  => ['name' => $name, 'is_deleted' => 0, 'is_template' => 0] + $in_scope,
                 'ORDER'  => 'id ASC',
                 'LIMIT'  => 1,
             ]) as $r) {
@@ -475,6 +800,12 @@ class PluginIntegrasipamanCorrelation extends CommonGLPI
             }
         }
         return $ips;
+    }
+
+    /** @return list<string> the Computer's addresses, for display. */
+    public static function computerAddresses(int $computers_id): array
+    {
+        return self::computerIps($computers_id);
     }
 
     /**
@@ -519,7 +850,7 @@ class PluginIntegrasipamanCorrelation extends CommonGLPI
         global $DB;
         $stats = ['total' => 0, 'resolved' => 0, 'name_fallback' => 0, 'manual' => 0, 'unresolved' => 0];
 
-        foreach ($DB->request(['FROM' => self::USERMAP_TABLE]) as $row) {
+        foreach ($DB->request(['FROM' => self::USERMAP_TABLE, 'WHERE' => PluginIntegrasipamanConnection::ownRows()]) as $row) {
             $stats['total']++;
             if ((int) ($row['is_manual'] ?? 0) === 1) {
                 $stats['manual']++;
@@ -621,7 +952,7 @@ class PluginIntegrasipamanCorrelation extends CommonGLPI
      *
      * @param array<string,mixed> $vals        columns to write (incl. last_resolved_at)
      * @param array<string,mixed> $row         the row as currently stored
-     * @param string              $verdict_col is_production | is_admin
+     * @param string              $verdict_col asset_class | is_admin
      * @return bool whether $verdict_col actually changed
      */
     private static function writeRow(string $table, int $id, array $vals, array $row, string $verdict_col): bool

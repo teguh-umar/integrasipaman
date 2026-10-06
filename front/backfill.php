@@ -20,14 +20,21 @@ Session::checkLoginUser();
 // v2.0.0: gated on the plugin's own right (UPDATE) instead of core `config`
 // UPDATE - see inc/profile.class.php.
 include_once(__DIR__ . '/../inc/profile.class.php');
-Session::checkRight(PluginIntegrasipamanProfile::RIGHT, UPDATE);
+Session::checkRight(PluginIntegrasipamanProfile::RIGHT_CONFIG, UPDATE);
 
 Html::header(
     __('JumpServer Terminal Backfill', 'integrasipaman'),
-    $_SERVER['PHP_SELF'],
-    'tools',
-    'PluginIntegrasipamanDashboard'
+    '',
+    \GlpiPlugin\Pgnsuite\Menu::SECTOR,
+    'integrasipaman',
+    'setup'
 );
+\GlpiPlugin\Pgnsuite\Menu::renderSubNav('integrasipaman', 'setup');
+
+// v4.0.0: back-fill the JumpServer of the entity the admin is working in.
+// pullMonth() reads the current connection; with several connections and
+// none chosen it would (rightly) pull nothing.
+PluginIntegrasipamanConnection::choose(PluginIntegrasipamanConnection::forActiveEntity());
 
 $month     = trim($_GET['month'] ?? '');
 $config    = Config::getConfigurationValues(PluginIntegrasipamanConfig::CONFIG_CONTEXT);

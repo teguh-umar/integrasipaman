@@ -79,10 +79,18 @@ class PluginIntegrasipamanJmsApi
      * how many rows the window holds. Used by the high-volume terminal
      * pull; signedGet() stays for the low-volume audit-log cron.
      *
-     * @param callable(array<int,mixed>):void $on_page Receives one page's "results" list.
-     * @return bool  true if pagination ran to completion; false if it was
-     *               cut short by a page failure or by hitting $max_pages
-     *               (i.e. the window may be incompletely fetched).
+     * $on_page may return false to stop paging immediately - used by the
+     * date-windowed pulls, where PluginIntegrasipamanApiWindow has proven the
+     * stream ran past the start of the requested window (see
+     * inc/apiwindow.class.php). That is a deliberate, complete stop, so it
+     * reports success, unlike running into $max_pages.
+     *
+     * @param callable(array<int,mixed>):(bool|void) $on_page Receives one page's
+     *               "results" list; return false to stop paging.
+     * @return bool  true if pagination ran to completion (or was stopped on
+     *               purpose by $on_page); false if it was cut short by a page
+     *               failure or by hitting $max_pages (i.e. the window may be
+     *               incompletely fetched).
      */
     public static function signedGetEach(
         string $api_path,
@@ -108,7 +116,9 @@ class PluginIntegrasipamanJmsApi
             $count   = is_array($results) ? count($results) : 0;
 
             if (is_array($results) && $count > 0) {
-                $on_page($results);
+                if ($on_page($results) === false) {
+                    return true; // caller has everything it asked for
+                }
             }
 
             $next = $body['next'] ?? null;
@@ -240,5 +250,128 @@ class PluginIntegrasipamanJmsApi
         // A non-paginated endpoint returns a bare list, handled by the
         // caller's "$body['results'] ?? $body" fallback.
         return $data;
+    }
+
+    /**
+     * Build the Authorization header for one request.
+     *
+     * Pure and public so tests can pin the exact string-to-sign.
+     *
+     * The header list below is proven against live PAMAN for GET only. It
+     * is ASSUMED to hold for POST/PATCH/DELETE - that assumption has never
+     * been executed against the bastion. If PAMAN requires `digest` or
+     * `content-type` to be signed on a body-carrying request, every send
+     * returns 401 and this function is the only thing that changes.
+     * scripts/probe_provisioning_write.php (uncommitted, gitignored) exists
+     * to settle it and must be run before the first production send.
+     * Do not add or reorder headers without re-probing.
+     */
+    public static function buildAuthHeader(
+        string $method,
+        string $api_path,
+        string $date_header,
+        string $org_id,
+        string $access_key_id,
+        string $access_key_secret
+    ): string {
+        $verb = strtolower($method);
+
+        $string_to_sign = "(request-target): {$verb} {$api_path}\n"
+            . "accept: application/json\n"
+            . "date: {$date_header}\n"
+            . "x-jms-org: {$org_id}";
+
+        $signature = base64_encode(hash_hmac('sha256', $string_to_sign, $access_key_secret, true));
+
+        return sprintf(
+            'Signature keyId="%s",algorithm="hmac-sha256",headers="(request-target) accept date x-jms-org",signature="%s"',
+            $access_key_id,
+            $signature
+        );
+    }
+
+    /**
+     * Redact a secret (an access key secret, or any string it appears
+     * inside) before it reaches a log line. Keeps just enough of the token
+     * (first 4 characters) to help correlate log entries with a specific
+     * configured credential without exposing the value itself.
+     */
+    public static function maskToken(string $token): string
+    {
+        $visible = mb_substr($token, 0, 4);
+
+        return $visible . str_repeat('*', 8) . '[REDACTED]';
+    }
+
+    /**
+     * One door for every write: POST (create), PATCH (resend), DELETE
+     * (remove), and the GET of a single host.
+     *
+     * Unlike signedGet*(), this returns the HTTP code and decoded body even
+     * on failure. The provisioning queue shows the admin what PAMAN itself
+     * said - "platform: this field is required" is actionable, "failed to
+     * send asset" is not - so the detail has to survive the call.
+     *
+     * @param array<string, mixed>|null $body JSON request body, or null for GET/DELETE.
+     * @return array{code:int, body:mixed, error:string}
+     */
+    public static function signedRequest(
+        string $method,
+        string $api_path,
+        ?array $body,
+        string $base_url,
+        string $access_key_id,
+        string $access_key_secret,
+        string $org_id
+    ): array {
+        $date_header = gmdate('D, d M Y H:i:s \G\M\T');
+
+        $headers = [
+            'Accept: application/json',
+            'Date: ' . $date_header,
+            'Authorization: ' . self::buildAuthHeader(
+                $method, $api_path, $date_header, $org_id, $access_key_id, $access_key_secret
+            ),
+            'X-JMS-ORG: ' . $org_id,
+        ];
+
+        if ($body !== null) {
+            $headers[] = 'Content-Type: application/json';
+        }
+
+        $curl_handle = curl_init();
+
+        curl_setopt_array($curl_handle, [
+            CURLOPT_URL            => rtrim($base_url, '/') . $api_path,
+            CURLOPT_CUSTOMREQUEST  => strtoupper($method),
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_HTTPHEADER     => $headers,
+            CURLOPT_TIMEOUT        => 30,
+            CURLOPT_SSL_VERIFYPEER => true,
+        ]);
+
+        if ($body !== null) {
+            curl_setopt($curl_handle, CURLOPT_POSTFIELDS, json_encode($body));
+        }
+
+        $response   = curl_exec($curl_handle);
+        $http_code  = (int) curl_getinfo($curl_handle, CURLINFO_HTTP_CODE);
+        $curl_error = curl_error($curl_handle);
+
+        curl_close($curl_handle);
+
+        if ($response === false) {
+            return ['code' => 0, 'body' => null, 'error' => $curl_error];
+        }
+
+        $decoded = json_decode((string) $response, true);
+
+        return [
+            'code'  => $http_code,
+            // A 204 has no body; keep the raw string for anything undecodable
+            // so the queue page can quote PAMAN verbatim.
+            'body'  => json_last_error() === JSON_ERROR_NONE ? $decoded : (string) $response,
+            'error' => '',
+        ];
     }
 }

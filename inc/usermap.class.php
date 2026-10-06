@@ -24,6 +24,7 @@ class PluginIntegrasipamanUserMap extends CommonDBTM
         return 'glpi_plugin_jumpserver_usermap';
     }
 
+
     public static function getTypeName($nb = 0)
     {
         return _n('JumpServer user mapping', 'JumpServer user mappings', $nb, 'integrasipaman');
@@ -31,7 +32,7 @@ class PluginIntegrasipamanUserMap extends CommonDBTM
 
     public static function canView(): bool
     {
-        return Session::haveRight(PluginIntegrasipamanProfile::RIGHT, READ);
+        return Session::haveRight(PluginIntegrasipamanProfile::RIGHT_CONFIG, READ);
     }
 
     public static function canCreate(): bool
@@ -42,12 +43,12 @@ class PluginIntegrasipamanUserMap extends CommonDBTM
 
     public static function canUpdate(): bool
     {
-        return Session::haveRight(PluginIntegrasipamanProfile::RIGHT, UPDATE);
+        return Session::haveRight(PluginIntegrasipamanProfile::RIGHT_CONFIG, UPDATE);
     }
 
     public static function canPurge(): bool
     {
-        return Session::haveRight(PluginIntegrasipamanProfile::RIGHT, UPDATE);
+        return Session::haveRight(PluginIntegrasipamanProfile::RIGHT_CONFIG, UPDATE);
     }
 
     /**

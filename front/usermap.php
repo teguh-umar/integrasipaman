@@ -15,14 +15,16 @@ include('../../../inc/includes.php');
 // UPDATE, which used to hand the whole of Setup > General to anyone who
 // needed these reports.
 include_once(__DIR__ . '/../inc/profile.class.php');
-Session::checkRight(PluginIntegrasipamanProfile::RIGHT, READ);
+Session::checkRight(PluginIntegrasipamanProfile::RIGHT_CONFIG, READ);
 
 Html::header(
     PluginIntegrasipamanUserMap::getTypeName(2),
-    $_SERVER['PHP_SELF'],
-    'config',
-    'plugins'
+    '',
+    \GlpiPlugin\Pgnsuite\Menu::SECTOR,
+    'integrasipaman',
+    'correlation'
 );
+\GlpiPlugin\Pgnsuite\Menu::renderSubNav('integrasipaman', 'correlation');
 
 Search::show('PluginIntegrasipamanUserMap');
 

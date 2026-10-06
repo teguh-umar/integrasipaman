@@ -18,6 +18,9 @@ if (!defined('GLPI_ROOT')) {
 }
 
 require_once __DIR__ . '/jmsapi.class.php';
+require_once __DIR__ . '/apiwindow.class.php';
+
+require_once __DIR__ . '/serverlabel.class.php';
 
 class PluginIntegrasipamanCron extends CommonDBTM
 {
@@ -44,9 +47,46 @@ class PluginIntegrasipamanCron extends CommonDBTM
                 return [
                     'description' => 'Pull historical audit logs from the JumpServer REST API',
                 ];
+
+            case 'provisioning_scan':
+                return [
+                    'description' => PluginIntegrasipamanServerLabel::in('Refresh the {server} provisioning queue: eligibility, drift, and assets marked for removal'),
+                ];
         }
 
         return [];
+    }
+
+    /**
+     * Automatic action: sweep every Computer and bring the provisioning
+     * queue up to date.
+     *
+     * This never writes to PAMAN. It prepares work for a person - who is
+     * eligible, what has drifted, what has been disposed of - and nothing
+     * more. That is the property that stops a missed cron run from becoming
+     * an incident: the worst a skipped run can do is show a stale queue.
+     *
+     * @return integer 1 when the sweep completed, 0 when it could not run.
+     */
+    public static function cronProvisioning_scan(CronTask $task): int
+    {
+        include_once(__DIR__ . '/provisioning.class.php');
+        include_once(__DIR__ . '/nodemap.class.php');
+        include_once(__DIR__ . '/platformmap.class.php');
+
+        $summary = PluginIntegrasipamanProvisioning::scanAll();
+
+        $task->setVolume($summary['seen']);
+        $task->log(sprintf(
+            'Scanned %d computers: %d added, %d dropped, %d drifted, %d marked for removal.',
+            $summary['seen'],
+            $summary['added'],
+            $summary['dropped'],
+            $summary['drifted'],
+            $summary['pending_removal']
+        ));
+
+        return 1;
     }
 
     /**
@@ -59,19 +99,59 @@ class PluginIntegrasipamanCron extends CommonDBTM
      */
     public static function cronPull_historical_logs(CronTask $task): int
     {
-        $config            = Config::getConfigurationValues(PluginIntegrasipamanConfig::CONFIG_CONTEXT);
-        $base_url          = trim($config['jumpserver_url'] ?? '');
-        $access_key_id     = trim($config['jumpserver_access_key_id'] ?? '');
-        $access_key_secret = trim($config['jumpserver_access_key_secret'] ?? '');
-        $org_id            = trim($config['jumpserver_org_id'] ?? '');
-
-        if ($base_url === '' || $access_key_id === '' || $access_key_secret === '') {
+        // v4.0.0: one pull per connection, each with its own cursor. A
+        // connection that fails - or throws - is logged and skipped; the
+        // others still run.
+        if (PluginIntegrasipamanConnection::all() === []) {
             $task->log('JumpServer URL/IP or Access Key ID/Secret is not configured. Skipping.');
             $task->setVolume(0);
             return 0;
         }
 
-        $start_date = self::computeStartDate($task);
+        $several  = count(PluginIntegrasipamanConnection::all()) > 1;
+        $imported = 0;
+        $any_ok   = false;
+
+        $runs = PluginIntegrasipamanConnection::each(
+            static function (PluginIntegrasipamanConnection $connection) use ($task, $several): array {
+                if ($several) {
+                    $task->log(sprintf('--- connection "%s" (entity %d) ---', $connection->label(), $connection->entity()));
+                }
+                return self::pullLogsFor($task, $connection);
+            }
+        );
+
+        foreach ($runs as $run) {
+            if ($run['error'] !== '') {
+                $task->log(sprintf('Connection "%s": the pull stopped: %s', $run['connection']->label(), $run['error']));
+                continue;
+            }
+            $imported += $run['result']['imported'];
+            $any_ok    = $any_ok || $run['result']['ok'];
+        }
+
+        $task->setVolume($imported);
+
+        return $any_ok ? 1 : 0;
+    }
+
+    /**
+     * The audit-log pull for one connection, which is the current one.
+     *
+     * @return array{ok: bool, imported: int} ok is false only when the
+     *         connection is not configured or every endpoint failed.
+     */
+    private static function pullLogsFor(CronTask $task, PluginIntegrasipamanConnection $connection): array
+    {
+        [$base_url, $access_key_id, $access_key_secret, $org_id] = $connection->credentials();
+
+        if ($base_url === '' || $access_key_id === '' || $access_key_secret === '') {
+            $task->log('JumpServer URL/IP or Access Key ID/Secret is not configured. Skipping.');
+            return ['ok' => false, 'imported' => 0];
+        }
+
+        $start_date = self::computeStartDate($task, $connection);
+        $run_start  = date('Y-m-d H:i:s');
         $end_date   = date('Y-m-d\TH:i:s');
 
         $credentials = [$base_url, $access_key_id, $access_key_secret, $org_id];
@@ -86,10 +166,30 @@ class PluginIntegrasipamanCron extends CommonDBTM
         $any_fetch_failed = false;
 
         // --- Operating logs (general admin/config audit trail) ---------------
-        $operating_query = $start_date !== null ? ['date_from' => $start_date] : [];
-        $operating_path  = self::OPERATING_LOGS_PATH
-            . ($operating_query !== [] ? '?' . http_build_query($operating_query) : '');
-        $operating_logs  = PluginIntegrasipamanJmsApi::signedGet($operating_path, ...$credentials);
+        // date_from is NOT a documented parameter of /audits/operate-logs/
+        // (swagger documents the numeric days/days__lt pair instead), and DRF
+        // ignores unknown query params, so it may well do nothing. It is kept
+        // - free if honoured - and the window is enforced client-side by
+        // fetchWindowed() below, which also stops paging as soon as the
+        // stream has provably run past $start_date.
+        //
+        // DO NOT "fix" this by switching to days/days__lt. Probed live against
+        // paman.example.com 2026-09-22: both return **HTTP 500** on this
+        // endpoint, with and without `order`, so it is the parameter itself
+        // and not an interaction. Sending days= would kill every pull.
+        //
+        // `order` IS honoured (same probe, all three pulled endpoints), so the
+        // early stop in PluginIntegrasipamanApiWindow really does engage and
+        // this pull is already incremental - runs complete in 0-2 seconds. The
+        // filter question is closed; re-probe before reopening it.
+        $operating_query = ['order' => '-datetime'];
+        if ($start_date !== null) {
+            $operating_query['date_from'] = $start_date;
+        }
+        $operating_path = self::OPERATING_LOGS_PATH . '?' . http_build_query($operating_query);
+        $operating_logs = self::fetchWindowed(
+            $operating_path, $credentials, 'datetime', $start_date, null, $task, 'operate-logs'
+        );
 
         if ($operating_logs === null) {
             $any_fetch_failed = true;
@@ -104,12 +204,21 @@ class PluginIntegrasipamanCron extends CommonDBTM
 
         // --- Login failures only (status=0 per JumpServer's own filter choices,
         // confirmed live: status=0 -> Failed, status=1 -> Success) ------------
-        $login_query = ['status' => '0', 'date_to' => $end_date];
+        // /audits/login-logs/ documents NO date filter at all (only city, id,
+        // ip, mfa, status, type, username, plus limit/offset/order/q - swagger
+        // checked 2026-09-21), so date_from/date_to here are almost certainly
+        // inert. status=0 IS documented and is confirmed live. Same treatment:
+        // send them anyway, enforce the window client-side. There is no days=
+        // here to be tempted by, and `order` was confirmed honoured on this
+        // endpoint too (probe 2026-09-22), so the early stop works.
+        $login_query = ['status' => '0', 'order' => '-datetime', 'date_to' => $end_date];
         if ($start_date !== null) {
             $login_query['date_from'] = $start_date;
         }
         $login_path     = self::LOGIN_LOGS_PATH . '?' . http_build_query($login_query);
-        $login_failures = PluginIntegrasipamanJmsApi::signedGet($login_path, ...$credentials);
+        $login_failures = self::fetchWindowed(
+            $login_path, $credentials, 'datetime', $start_date, $end_date, $task, 'login-logs'
+        );
 
         if ($login_failures === null) {
             $any_fetch_failed = true;
@@ -147,15 +256,98 @@ class PluginIntegrasipamanCron extends CommonDBTM
             $window_label
         ));
 
-        $task->setVolume($total_imported);
-
         // Only a total fetch failure across all 3 endpoints counts as a
         // hard failure; a partial fetch failure (e.g. one endpoint down)
         // still imports whatever succeeded and is logged above, matching
         // this plugin's established "never let one JumpServer-side
         // problem block everything else" pattern (see
         // inc/pbiconnection.class.php's per-section failure isolation).
-        return ($any_fetch_failed && $total_imported === 0 && $total_skipped === 0) ? 0 : 1;
+        $ok = !($any_fetch_failed && $total_imported === 0 && $total_skipped === 0);
+
+        // The cursor moves under exactly the condition the cron task's own
+        // `lastrun` used to: a run that counts as a success. It is the time
+        // this run STARTED, so nothing logged while it ran is skipped.
+        if ($ok) {
+            $connection->setCursor('last_logs_pull', $run_start);
+        }
+
+        return ['ok' => $ok, 'imported' => $total_imported];
+    }
+
+    /**
+     * Page a JumpServer list endpoint, keeping only the entries whose
+     * $date_field falls in [$from, $to), and stop paging as soon as the
+     * stream has provably run past $from.
+     *
+     * This is the mitigation for the fact that most of the endpoints this
+     * cron pulls do not document any date filter: whatever the server does
+     * or does not do with date_from/date_to, the rows that come back from
+     * here are inside the window. When the server clearly ignored the filter
+     * (out-of-window rows arrived) that is logged once per endpoint, because
+     * it is the difference between an incremental pull and re-downloading
+     * history every hour.
+     *
+     * @param array{0:string,1:string,2:string,3:string} $credentials
+     *        [base_url, access_key_id, access_key_secret, org_id]
+     * @return array<int, mixed>|null Entries inside the window, or null when
+     *         the very first page failed (caller treats that as a fetch failure).
+     */
+    private static function fetchWindowed(
+        string $api_path,
+        array $credentials,
+        string $date_field,
+        ?string $from,
+        ?string $to,
+        CronTask $task,
+        string $label
+    ): ?array {
+        [$base_url, $access_key_id, $access_key_secret, $org_id] = $credentials;
+
+        $window   = new PluginIntegrasipamanApiWindow($date_field, $from, $to);
+        $entries  = [];
+        $any_page = false;
+
+        $complete = PluginIntegrasipamanJmsApi::signedGetEach(
+            $api_path,
+            $base_url,
+            $access_key_id,
+            $access_key_secret,
+            $org_id,
+            static function (array $page) use (&$entries, &$any_page, $window) {
+                $any_page = true;
+                foreach ($window->filter($page) as $entry) {
+                    $entries[] = $entry;
+                }
+
+                return !$window->canStop();
+            }
+        );
+
+        if (!$any_page && $complete === false) {
+            return null; // first page failed outright
+        }
+
+        $stats = $window->stats();
+        if ($window->serverFilterIgnored()) {
+            $task->log(sprintf(
+                '%s: JumpServer returned %d row(s) outside the requested window '
+                . '(kept %d) - the date filter is not applied server-side on this '
+                . 'endpoint, the window was enforced here.',
+                $label,
+                $stats['dropped'],
+                $stats['kept']
+            ));
+        }
+        if ($stats['undated'] > 0) {
+            $task->log(sprintf(
+                '%s: %d row(s) had no usable "%s" value; imported anyway rather than dropped.',
+                $label,
+                $stats['undated'],
+                $date_field
+            ));
+        }
+
+        return $entries;
     }
 
     /**
@@ -173,9 +365,15 @@ class PluginIntegrasipamanCron extends CommonDBTM
      *
      * @return string|null Formatted start date (Y-m-d\TH:i:s), or null for a full pull.
      */
-    private static function computeStartDate(CronTask $task): ?string
+    private static function computeStartDate(CronTask $task, PluginIntegrasipamanConnection $connection): ?string
     {
-        $last_run = $task->fields['lastrun'] ?? null;
+        // v4.0.0: each connection has its own cursor. Until it has completed
+        // a pull of its own, it starts from the task's `lastrun` - which for
+        // the connection that existed before this release is exactly where
+        // it left off, so the upgrade does not re-pull history. A connection
+        // added later starts there too, not from the beginning of time; its
+        // older history is what the terminal back-fill is for.
+        $last_run = $connection->cursor('last_logs_pull') ?? ($task->fields['lastrun'] ?? null);
 
         if (empty($last_run)) {
             return null;
@@ -203,6 +401,10 @@ class PluginIntegrasipamanCron extends CommonDBTM
         $imported = 0;
         $failed   = 0;
         $skipped  = 0;
+
+        // v3.11.0: every row carries its connection and that connection's
+        // entity. An audit-log entry names no asset this plugin can match.
+        $rows = PluginIntegrasipamanConnection::stampRows($rows);
 
         foreach ($rows as $row) {
             $source_id = $row['source_id'] ?? '';
@@ -233,7 +435,8 @@ class PluginIntegrasipamanCron extends CommonDBTM
 
         $iterator = $DB->request([
             'FROM'  => 'glpi_plugin_jumpserver_logs',
-            'WHERE' => ['source_id' => $source_id],
+            // Within this connection: another JumpServer may use the same id.
+            'WHERE' => ['source_id' => $source_id] + PluginIntegrasipamanConnection::ownRows(),
             'LIMIT' => 1,
         ]);
 

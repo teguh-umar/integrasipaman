@@ -17,8 +17,8 @@
  * authenticated user like front/export.php): this page surfaces PAM
  * audit detail (executed commands, privileged usernames, login-failure
  * detail) from a separate database, not just this plugin's own thin
- * event log - see PluginIntegrasipamanDashboard::getMenuContent(), which
- * hides the Tools-menu entry under the same right check.
+ * event log - see PluginIntegrasipamanMenu::entry(), which hides the
+ * menu options for this page under the same right check.
  * -------------------------------------------------------------------------
  */
 
@@ -32,7 +32,7 @@ Session::checkLoginUser();
 // UPDATE, which used to hand the whole of Setup > General to anyone who
 // needed these reports.
 include_once(__DIR__ . '/../inc/profile.class.php');
-Session::checkRight(PluginIntegrasipamanProfile::RIGHT, READ);
+Session::checkRight(PluginIntegrasipamanProfile::RIGHT_REPORT, READ);
 
 /**
  * Render one PBI section: a heading, a one-line row-count KPI, and a
@@ -105,24 +105,24 @@ function jumpserver_pbi_render_section(string $title, ?array $rows, array $colum
     echo '</div></div>';
 }
 
+// Resolved before Html::header() because the active tab is also the menu
+// option to highlight ('insights' / 'report' are both options of this
+// plugin's entry in the shared suite menu - see inc/menu.class.php).
+$tab = (($_GET['tab'] ?? 'insights') === 'report') ? 'report' : 'insights';
+
 Html::header(
-    __('JumpServer PBI Insights', 'integrasipaman'),
-    $_SERVER['PHP_SELF'],
-    'tools',
-    'PluginIntegrasipamanDashboard'
+    $tab === 'report'
+        ? __('Command Audit Report', 'integrasipaman')
+        : __('JumpServer PBI Insights', 'integrasipaman'),
+    '',
+    \GlpiPlugin\Pgnsuite\Menu::SECTOR,
+    'integrasipaman',
+    $tab
 );
+\GlpiPlugin\Pgnsuite\Menu::renderSubNav('integrasipaman', $tab);
 
-$tab      = (($_GET['tab'] ?? 'insights') === 'report') ? 'report' : 'insights';
-$base_url = Plugin::getWebDir('integrasipaman') . '/front/pbi.php';
-
-echo '<ul class="nav nav-tabs mb-3">';
-echo '<li class="nav-item"><a class="nav-link' . ($tab === 'insights' ? ' active' : '')
-    . '" href="' . htmlescape($base_url . '?tab=insights') . '">'
-    . htmlescape(__('PBI Insights', 'integrasipaman')) . '</a></li>';
-echo '<li class="nav-item"><a class="nav-link' . ($tab === 'report' ? ' active' : '')
-    . '" href="' . htmlescape($base_url . '?tab=report') . '">'
-    . htmlescape(__('Command Audit Report', 'integrasipaman')) . '</a></li>';
-echo '</ul>';
+// No tab bar of its own any more: the sub-nav above lists both tabs next to
+// the plugin's other pages, and a second bar under it would repeat them.
 
 if ($tab === 'report') {
     PluginIntegrasipamanReport::renderReportTab($_GET);
@@ -136,16 +136,18 @@ include_once(__DIR__ . '/../inc/dashboard.class.php');
 // PBI-database detail tables - see PluginIntegrasipamanDashboard::renderOverview().
 PluginIntegrasipamanDashboard::renderOverview();
 
-$config = array_merge(
-    PluginIntegrasipamanConfig::CONFIG_DEFAULTS,
-    Config::getConfigurationValues(PluginIntegrasipamanConfig::CONFIG_CONTEXT)
-);
+// v3.11.0: the PBI reporting database belongs to the connection, and not
+// every connection has one.
+// v4.0.0: the one that serves the entity the viewer is working in - never
+// simply "the" connection, or a user of an entity it does not serve would
+// be shown its reporting database.
+$pbi_connection = PluginIntegrasipamanConnection::forActiveEntity();
 
-$pbi_host     = trim($config['jumpserver_pbi_db_host'] ?? '');
-$pbi_port     = trim($config['jumpserver_pbi_db_port'] ?? '');
-$pbi_database = trim($config['jumpserver_pbi_db_name'] ?? '');
-$pbi_user     = trim($config['jumpserver_pbi_db_user'] ?? '');
-$pbi_password = trim($config['jumpserver_pbi_db_password'] ?? '');
+$pbi_host     = $pbi_connection?->get('pbi_db_host') ?? '';
+$pbi_port     = $pbi_connection?->get('pbi_db_port') ?? '';
+$pbi_database = $pbi_connection?->get('pbi_db_name') ?? '';
+$pbi_user     = $pbi_connection?->get('pbi_db_user') ?? '';
+$pbi_password = $pbi_connection?->pbiDbPassword() ?? '';
 
 $row_limit = 100;
 

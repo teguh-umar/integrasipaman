@@ -1,4 +1,10 @@
 * text=auto eol=lf
 *.php text eol=lf
 
+# Byte-exact, no line-ending normalisation: these three files are shared across
+# the plugin suite, and whichever plugin loads first supplies them to all of
+# them, so every copy must hash identically. Normalising them here would change
+# their bytes, and so their SHA, which is what the suite contract forbids.
+lib/pgnsuite/Menu.php -text
 lib/pgnsuite/ConfigTab.php -text
+lib/pgnsuite/AssetTab.php -text

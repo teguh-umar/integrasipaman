@@ -28,7 +28,7 @@ Session::checkLoginUser();
 // UPDATE, which used to hand the whole of Setup > General to anyone who
 // needed these reports.
 include_once(__DIR__ . '/../inc/profile.class.php');
-Session::checkRight(PluginIntegrasipamanProfile::RIGHT, READ);
+Session::checkRight(PluginIntegrasipamanProfile::RIGHT_REPORT, READ);
 
 $allowed_formats = ['view', 'csv', 'xls', 'pdf'];
 $format          = (string) ($_GET['format'] ?? 'view');

@@ -14,8 +14,25 @@ if (!defined('GLPI_ROOT')) {
     die('Sorry. You can not access this file directly');
 }
 
+require_once __DIR__ . '/serverlabel.class.php';
+require_once __DIR__ . '/connection.class.php';
+
 class PluginIntegrasipamanConfig extends CommonDBTM
 {
+
+    /**
+     * Every accepted value of correlation_match_mode, in dropdown order.
+     *
+     * Single source of truth on purpose: v2.6.0 shipped with 'hybrid_name'
+     * in the dropdown and in the resolver but NOT in front/config.form.php's
+     * save whitelist, so choosing it reported success and stored 'ip_only'.
+     * A new mode is three edits - dropdown, resolver, controller - and only
+     * the first two were covered by tests. The controller now reads this
+     * list, so there is nothing left to forget; tests/config_modes_test.php
+     * asserts the dropdown and this constant stay the same set.
+     */
+    public const MATCH_MODES = ['ip_only', 'name_only', 'hybrid', 'hybrid_name'];
+
     /**
      * Context key this plugin's settings are stored under in
      * GLPI's core Config class (glpi_configs.context).
@@ -64,26 +81,48 @@ class PluginIntegrasipamanConfig extends CommonDBTM
 
     private const SEED_PROD_PREFIXES = "10.0.0.\n10.0.1.";
 
+    /**
+     * Seeded byte-identical in meaning to v3.7.0's CATEGORY_MAP constant,
+     * so the upgrade re-categorises every historical row to exactly the
+     * category it already had. Line order is match order.
+     *
+     * Note `su ` keeps a trailing space: without it the keyword matches
+     * sudo, sudoers, issue and resume.
+     */
+    private const SEED_COMMAND_CATEGORIES =
+        "Account Management: passwd, useradd, userdel, usermod, groupadd, groupdel, gpasswd, chage\n"
+      . "Privilege Escalation: sudo, su , visudo\n"
+      . "Service Change: systemctl, service, iisreset, sc stop, sc config\n"
+      . "Network Security: iptables, firewall-cmd, route, ip route\n"
+      . "Destructive: rm -rf, mkfs, fdisk, parted, dd if=, format, diskpart, del /f, remove-item";
+
+    /**
+     * What the connection fields of the Setup form show before a connection
+     * exists. The connection itself - URL, Access Key, Organization ID,
+     * Command Storage ID, the PBI reporting database - is a row of
+     * glpi_plugin_jumpserver_connections since v3.11.0, NOT config: see
+     * PluginIntegrasipamanConnection. Keyed by the form's field names.
+     *
+     * The PBI database is a separate MySQL server hosting the
+     * jumpserver_pbi_views schema built by a separate ETL project - see
+     * docs/superpowers/specs/2026-08-26-jumpserver-pbi-insights-tab-design.md.
+     * Not every subsidiary has one, so it is optional per connection.
+     */
+    public const CONNECTION_FORM_DEFAULTS = [
+        'jumpserver_url'                => '',
+        'jumpserver_access_key_id'      => '',
+        'jumpserver_org_id'             => self::DEFAULT_ORG_ID,
+        'jumpserver_command_storage_id' => '',
+        'jumpserver_pbi_db_host'        => '',
+        'jumpserver_pbi_db_port'        => '3306',
+        'jumpserver_pbi_db_name'        => 'jumpserver_pbi_views',
+        'jumpserver_pbi_db_user'        => '',
+    ];
+
     public const CONFIG_DEFAULTS = [
-        'jumpserver_url'               => '',
-        'jumpserver_access_key_id'     => '',
-        'jumpserver_access_key_secret' => '',
-        'jumpserver_org_id'            => self::DEFAULT_ORG_ID,
-        // Separate MySQL server (confirmed different from GLPI's own DB
-        // server) hosting the jumpserver_pbi_views reporting schema built
-        // by a separate ETL project - see
-        // docs/superpowers/specs/2026-08-26-jumpserver-pbi-insights-tab-design.md.
-        // Read-only credentials, used only by inc/pbiconnection.class.php.
-        'jumpserver_pbi_db_host'       => '',
-        'jumpserver_pbi_db_port'       => '3306',
-        'jumpserver_pbi_db_name'       => 'jumpserver_pbi_views',
-        'jumpserver_pbi_db_user'       => '',
-        'jumpserver_pbi_db_password'   => '',
         // Terminal command/session pull (inc/terminalpull.class.php +
-        // the pull_terminal_activity cron). command_storage_id is a
-        // required query param on /api/v1/terminal/commands/. The two
-        // *_months values are read through self::clampMonths().
-        'jumpserver_command_storage_id'        => '',
+        // the pull_terminal_activity cron). The two *_months values are
+        // read through self::clampMonths().
         'jumpserver_terminal_retention_months' => '13',
         'jumpserver_terminal_backfill_months'  => '13',
         // Command risk evaluation (inc/riskeval.class.php + the
@@ -93,11 +132,21 @@ class PluginIntegrasipamanConfig extends CommonDBTM
         'jumpserver_risk_keywords'           => self::SEED_RISK_KEYWORDS,
         'jumpserver_admin_users'             => self::SEED_ADMIN_USERS,
         'jumpserver_production_ip_prefixes'  => self::SEED_PROD_PREFIXES,
+        // Seeded EMPTY, unlike its production sibling. An invented default
+        // here would classify assets nobody has looked at, which is the
+        // exact failure this feature exists to remove.
+        'jumpserver_development_ip_prefixes' => '',
+        // Command categories: one line per category, `Nama: kata1, kata2`.
+        // Line order is match order. Seeded with exactly the five categories
+        // that were compiled into the plugin up to v3.7.0, so an upgrade
+        // re-derives the category every row already had.
+        'jumpserver_command_categories'      => self::SEED_COMMAND_CATEGORIES,
         // Asset & user correlation (inc/correlation.class.php + the
         // resolver run at the top of the evaluate_commands cron - Piece 3).
         // With both selections empty the resolver routes everything
         // through the two fallback lists above, i.e. identical verdicts
         // to Piece 2. correlation_match_mode is ip_only | name_only |
+        // hybrid | hybrid_name (showFormConfig documents each);
         // hybrid; the other two are comma-separated glpi_ipnetworks.id /
         // glpi_groups.id.
         'correlation_match_mode'             => 'ip_only',
@@ -105,15 +154,71 @@ class PluginIntegrasipamanConfig extends CommonDBTM
         'correlation_production_addressings' => '',
         'correlation_admin_groups'           => '',
         // Bumped by the resolver / an admin override only when an
-        // is_production / is_admin verdict actually changes; folded into
+        // asset_class / is_admin verdict actually changes; folded into
         // PluginIntegrasipamanRiskEval::rulesHash() so a plain new asset
         // string does not force a full re-evaluation.
         'correlation_maps_generation'        => '0',
+        // Asset provisioning (inc/provisioning.class.php). Comma-separated
+        // id lists, matching the correlation_* convention above; the IP
+        // prefixes are one per line, matching jumpserver_production_ip_prefixes.
+        // Every one empty = that filter does not filter. See the spec.
+        'provisioning_eligible_types'     => '',
+        'provisioning_eligible_states'    => '',
+        'provisioning_dispose_states'     => '',
+        'provisioning_eligible_entities'  => '',
+        'provisioning_ip_prefixes'        => '',
+        // Ticket statuses that count as an approval for removing an asset
+        // from PAMAN. 5 = Solved, 6 = Closed in core GLPI.
+        'provisioning_ticket_statuses'    => '5,6',
+        // Cache, not settings: JSON {"at": <timestamp>, "rows": [...]} of
+        // the last successful PAMAN nodes/platforms fetch (see
+        // inc/pamanlists.class.php). Never shown on showFormConfig() or
+        // saved from front/config.form.php - an admin "saving" this page
+        // would overwrite a fresh fetch with a stale copy.
+        'provisioning_cache_nodes'       => '',
+        'provisioning_cache_platforms'   => '',
     ];
 
     public static function getTypeName($nb = 0)
     {
         return __('JumpServer Integration', 'integrasipaman');
+    }
+
+    /** Where the Setup page remembers which connection is being edited. */
+    public const SESSION_CONNECTION = 'plugin_integrasipaman_connection';
+
+    /**
+     * The connection the Setup form is editing (v4.0.0), among those owned
+     * by an entity the admin is working in - switched-off ones included, or
+     * there would be no way to switch one back on.
+     *
+     * In order: the one chosen from the list on the form, the one serving
+     * the entity the admin is in, the first one they may see. Otherwise the
+     * form is the "new connection" form.
+     *
+     * @return array{0: bool, 1: ?PluginIntegrasipamanConnection} [new?, connection]
+     */
+    public static function editedConnection(): array
+    {
+        $visible = PluginIntegrasipamanConnection::visible(true);
+        $chosen  = $_SESSION[self::SESSION_CONNECTION] ?? null;
+
+        if ($chosen === 'new') {
+            return [true, null];
+        }
+        if (is_int($chosen) && isset($visible[$chosen])) {
+            return [false, $visible[$chosen]];
+        }
+
+        $serving = PluginIntegrasipamanConnection::forActiveEntity();
+        if ($serving !== null && isset($visible[$serving->id()])) {
+            return [false, $visible[$serving->id()]];
+        }
+        if ($visible !== []) {
+            return [false, reset($visible)];
+        }
+
+        return [true, null];
     }
 
     /**
@@ -148,7 +253,7 @@ class PluginIntegrasipamanConfig extends CommonDBTM
      */
     public static function suiteSection(): ?array
     {
-        if (!Session::haveRight(PluginIntegrasipamanProfile::RIGHT, READ)) {
+        if (!Session::haveRight(PluginIntegrasipamanProfile::RIGHT_CONFIG, READ)) {
             return null;
         }
 
@@ -176,26 +281,93 @@ class PluginIntegrasipamanConfig extends CommonDBTM
     {
         global $DB;
 
-        if (!Session::haveRight(PluginIntegrasipamanProfile::RIGHT, READ)) {
+        if (!Session::haveRight(PluginIntegrasipamanProfile::RIGHT_CONFIG, READ)) {
             return;
         }
 
-        $canedit = Session::haveRight(PluginIntegrasipamanProfile::RIGHT, UPDATE);
+        $canedit = Session::haveRight(PluginIntegrasipamanProfile::RIGHT_CONFIG, UPDATE);
 
         $config_values = array_merge(
             self::CONFIG_DEFAULTS,
             Config::getConfigurationValues(self::CONFIG_CONTEXT)
         );
 
-        echo '<div class="card">';
-        echo '<div class="card-header d-flex align-items-center justify-content-between">';
-        echo '<h3 class="card-title">' . __('JumpServer Integration Settings') . '</h3>';
+        // v3.11.0: the connection fields come from the connection row. The
+        // form keeps its field names, so this is the only place that maps
+        // them. The two secrets are never read into the page.
+        // v4.0.0: there can be several. The form edits one of them - see
+        // editedConnection() - or is the form for a new one.
+        [$connection_is_new, $connection] = self::editedConnection();
+        foreach (PluginIntegrasipamanConnection::LEGACY_KEYS as $field => $column) {
+            $config_values[$field] = $connection === null
+                ? self::CONNECTION_FORM_DEFAULTS[$field]
+                : $connection->get($column);
+        }
+
+        // One tab per section, in page order (v3.8.2, matching opmanager's
+        // Setup). Each entry is [full title, Tabler icon, description, short
+        // tab label]; the tab bar is built from the same list, so a tab
+        // cannot point at a pane that does not exist.
+        $sections = [
+            'connection' => [
+                __('JumpServer Connection', 'integrasipaman'),
+                'ti ti-plug-connected',
+                __('Outbound REST API access, signed with the Access Key (HMAC-SHA256).', 'integrasipaman'),
+                __('Connection', 'integrasipaman'),
+            ],
+            'pbi' => [
+                __('PBI Reporting Database (read-only)', 'integrasipaman'),
+                'ti ti-database',
+                __('Separate MySQL server hosting the jumpserver_pbi_views reporting schema, used by the JumpServer PBI Insights page under Tools.', 'integrasipaman'),
+                __('PBI DB', 'integrasipaman'),
+            ],
+            'terminal' => [
+                __('Terminal Command Audit', 'integrasipaman'),
+                'ti ti-terminal-2',
+                __('Pull of JumpServer terminal command & session records into GLPI (daily cron "Pull JumpServer terminal command & session records"). Feeds the command-audit reports.', 'integrasipaman'),
+                __('Terminal Audit', 'integrasipaman'),
+            ],
+            'risk' => [
+                __('Command Risk Evaluation', 'integrasipaman'),
+                'ti ti-alert-triangle',
+                __('Rules for classifying terminal commands (cron "Classify JumpServer command records", every 15 min). One entry per line; blank lines and lines starting with # are ignored. Editing any list re-evaluates all history automatically.', 'integrasipaman'),
+                __('Risk Rules', 'integrasipaman'),
+            ],
+            'correlation' => [
+                __('Asset & User Correlation', 'integrasipaman'),
+                'ti ti-link',
+                __('Resolve each command\'s asset and user against GLPI instead of the fallback lists on the Risk Rules tab. Runs at the start of the "Classify JumpServer command records" cron and whenever you save this page.', 'integrasipaman'),
+                __('Correlation', 'integrasipaman'),
+            ],
+            'provisioning' => [
+                __('Asset provisioning', 'integrasipaman'),
+                'ti ti-server-bolt',
+                PluginIntegrasipamanServerLabel::in(__('Which GLPI assets may be sent to {server}. A filter left empty does not filter: set at least the eligible types, or every Computer in GLPI turns up in the queue.', 'integrasipaman')),
+                __('Provisioning', 'integrasipaman'),
+            ],
+        ];
+
+        // Scoped to .integrasipaman-config so it cannot restyle a sibling
+        // section in the shared PGN Suite tab. Tabler variables only, so the
+        // page follows the GLPI palette and dark mode.
+        echo '<style>'
+            . '.integrasipaman-config .form-hint{display:block;margin-top:.25rem}'
+            . '.integrasipaman-config textarea{font-family:var(--tblr-font-monospace);font-size:.85rem}'
+            . '</style>';
+
+        echo '<div class="integrasipaman-config">';
+
+        echo '<div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">';
+        echo '<h3 class="mb-0"><i class="ti ti-terminal-2 me-2"></i>' . htmlescape(__('JumpServer Integration Settings')) . '</h3>';
         echo '<a class="btn btn-sm btn-outline-secondary" href="'
             . Plugin::getWebDir('integrasipaman') . '/front/export.php" target="_blank" rel="noopener">'
-            . __('View Activity Log', 'integrasipaman')
+            . '<i class="ti ti-list-search me-1"></i>' . htmlescape(__('View Activity Log', 'integrasipaman'))
             . '</a>';
         echo '</div>';
-        echo '<div class="card-body">';
+
+        if (!$canedit) {
+            echo '<div class="alert alert-info">' . htmlescape(__('You have read-only access to this configuration.', 'integrasipaman')) . '</div>';
+        }
 
         // The opening tag is written directly (GLPI core has no dedicated
         // "open form" counterpart to Html::closeForm()).
@@ -216,7 +388,118 @@ class PluginIntegrasipamanConfig extends CommonDBTM
             echo Html::hidden('_from_pgnsuite', ['value' => '1']);
         }
 
-        echo '<div class="mb-3">';
+        // Every pane stays in this one form whichever tab is showing, so a
+        // hidden tab's fields are still posted - the absent-vs-empty guard
+        // on the categories list in front/config.form.php depends on it.
+        echo '<ul class="nav nav-tabs" role="tablist">';
+        foreach ($sections as $key => [$title, $icon, , $tab]) {
+            echo '<li class="nav-item" role="presentation">'
+                . '<a class="nav-link' . ($key === array_key_first($sections) ? ' active' : '') . '" data-bs-toggle="tab" role="tab"'
+                . ' href="#' . 'integrasipaman-sec-' . $key . '" title="' . htmlescape($title) . '">'
+                . '<i class="' . htmlescape($icon) . ' me-1"></i>' . htmlescape($tab) . '</a></li>';
+        }
+        echo '</ul>';
+        echo '<div class="tab-content border border-top-0 rounded-bottom p-3 mb-3">';
+
+        // --- JumpServer connection -----------------------------------------
+        self::openSection('connection', $sections['connection'], '', true);
+
+        // v3.11.0: the entity that owns this JumpServer, and whether its
+        // child entities are covered. What is pulled through the connection
+        // is stored in this entity, or in the entity of the Computer it is
+        // matched to when that lies inside this scope. The standard GLPI
+        // fields, never a hidden entities_id (suite entity rule, point 4).
+        //
+        // v4.0.0: several connections. The list on top chooses which one the
+        // rest of this tab, the PBI tab and the Command Storage ID belong to.
+        // Only connections owned by an entity the admin is working in are
+        // listed; a new one starts in that entity, never in a guessed one.
+        $select_url = Plugin::getWebDir('integrasipaman') . '/front/config.form.php?'
+            . ($from_pgnsuite ? '_from_pgnsuite=1&' : '') . 'select_connection=';
+
+        echo '<div class="col-12">';
+        echo '<div class="d-flex flex-wrap align-items-center gap-2">';
+        foreach (PluginIntegrasipamanConnection::visible(true) as $listed) {
+            $is_edited = !$connection_is_new && $connection !== null && $listed->id() === $connection->id();
+            echo '<a class="btn btn-sm ' . ($is_edited ? 'btn-primary' : 'btn-outline-secondary') . '" href="'
+                . htmlescape($select_url . $listed->id()) . '">'
+                . '<i class="ti ti-plug-connected me-1"></i>' . htmlescape($listed->label())
+                . ' <span class="opacity-75">- ' . htmlescape((string) Dropdown::getDropdownName('glpi_entities', $listed->entity())) . '</span>'
+                . ($listed->isActive() ? '' : ' <span class="badge bg-secondary ms-1">' . htmlescape(__('off', 'integrasipaman')) . '</span>')
+                . '</a>';
+        }
+        if ($canedit) {
+            echo '<a class="btn btn-sm ' . ($connection_is_new ? 'btn-primary' : 'btn-outline-primary') . '" href="'
+                . htmlescape($select_url . 'new') . '">'
+                . '<i class="ti ti-plus me-1"></i>' . htmlescape(__('Add a connection', 'integrasipaman')) . '</a>';
+        }
+        echo '</div>';
+        echo '<small class="form-hint">' . htmlescape(
+            $connection_is_new
+                ? __('New connection. Each entity can have one JumpServer of its own; fill in this tab and Save.', 'integrasipaman')
+                : __('One JumpServer per entity. This tab, the PBI DB tab and the Command Storage ID belong to the highlighted connection; the other tabs apply to all of them.', 'integrasipaman')
+        ) . '</small>';
+        echo '</div>';
+
+        // Which row the POST is for: an id, or 'new'. Never inferred on save.
+        echo Html::hidden('connection_id', ['value' => $connection_is_new ? 'new' : (string) $connection->id()]);
+
+        echo '<div class="col-md-8">';
+        echo '<label class="form-label" for="connection_name">' . htmlescape(__('Name')) . '</label>';
+        echo Html::input('connection_name', [
+            'id'          => 'connection_name',
+            'class'       => 'form-control',
+            'value'       => $connection === null ? '' : $connection->get('name'),
+            'placeholder' => __('For example the subsidiary this JumpServer serves', 'integrasipaman'),
+        ]);
+        echo '</div>';
+
+        echo '<div class="col-md-4">';
+        echo '<label class="form-label">' . htmlescape(__('Active')) . '</label>';
+        Dropdown::showYesNo('connection_is_active', ($connection === null || $connection->isActive()) ? 1 : 0);
+        echo '<small class="form-hint">' . htmlescape(__('Switched off: nothing is pulled and no asset is matched through it. What it already stored is kept.', 'integrasipaman')) . '</small>';
+        echo '</div>';
+
+        $connection_entity = $connection === null
+            ? (int) ($_SESSION['glpiactive_entity'] ?? 0)
+            : $connection->entity();
+        echo '<div class="col-md-8">';
+        echo '<label class="form-label">' . htmlescape(__('Entity')) . '</label>';
+        Entity::dropdown([
+            'name'   => 'connection_entities_id',
+            'value'  => $connection_entity,
+            'width'  => '100%',
+        ]);
+        echo '<small class="form-hint">' . htmlescape(__('The entity this JumpServer belongs to. Changing it moves every stored record of this connection to the new entity.', 'integrasipaman')) . '</small>';
+        echo '</div>';
+
+        echo '<div class="col-md-4">';
+        echo '<label class="form-label">' . htmlescape(__('Child entities')) . '</label>';
+        Dropdown::showYesNo('connection_is_recursive', ($connection === null || $connection->isRecursive()) ? 1 : 0);
+        echo '</div>';
+
+        // Entities that use this JumpServer without being under its owner -
+        // a sibling that shares the bastion and so cannot have a connection
+        // of its own. Offered: the entities the admin has access to.
+        $coverable = [];
+        foreach ($DB->request(['SELECT' => ['id', 'completename'], 'FROM' => 'glpi_entities', 'ORDER' => 'completename ASC']) as $e) {
+            if (Session::haveAccessToEntity((int) $e['id'])) {
+                $coverable[(int) $e['id']] = (string) $e['completename'];
+            }
+        }
+        echo '<div class="col-12">';
+        echo '<label class="form-label">' . htmlescape(__('Additional entities', 'integrasipaman')) . '</label>';
+        Dropdown::showFromArray('connection_extra_entities', $coverable, [
+            'values'   => $connection === null ? [] : $connection->extraEntities(),
+            'multiple' => true,
+            'width'    => '100%',
+        ]);
+        // An emptied multi-select posts nothing; this says the field was on the form.
+        echo Html::hidden('connection_extra_entities_shown', ['value' => '1']);
+        echo '<small class="form-hint">' . htmlescape(__('Other entities whose Computers are reached through this JumpServer. A record matched to one of their Computers is stored in that entity; an unmatched record stays in the owning entity. "Child entities" applies to these too. An entity with a connection of its own is served by that one.', 'integrasipaman')) . '</small>';
+        echo '</div>';
+
+        echo '<div class="col-12">';
         echo '<label class="form-label" for="jumpserver_url">' . __('JumpServer URL / IP') . '</label>';
         echo Html::input('jumpserver_url', [
             'id'          => 'jumpserver_url',
@@ -226,8 +509,8 @@ class PluginIntegrasipamanConfig extends CommonDBTM
         ]);
         echo '</div>';
 
-        echo '<div class="mb-3">';
-        echo '<label class="form-label" for="jumpserver_access_key_id">' . __('Access Key ID') . '</label>';
+        echo '<div class="col-md-6">';
+        echo '<label class="form-label required" for="jumpserver_access_key_id">' . __('Access Key ID') . '</label>';
         echo Html::input('jumpserver_access_key_id', [
             'id'       => 'jumpserver_access_key_id',
             'class'    => 'form-control',
@@ -236,37 +519,46 @@ class PluginIntegrasipamanConfig extends CommonDBTM
         ]);
         echo '</div>';
 
-        echo '<div class="mb-3">';
-        echo '<label class="form-label" for="jumpserver_access_key_secret">' . __('Access Key Secret') . '</label>';
+        echo '<div class="col-md-6">';
+        // v3.10.1: the stored secret is never sent to the page. The field is
+        // rendered empty; a blank submit keeps what is stored, so it is only
+        // `required` while nothing is.
+        $secret_stored = $connection !== null && $connection->hasSecret('access_key_secret');
+        echo '<label class="form-label required" for="jumpserver_access_key_secret">' . __('Access Key Secret') . '</label>';
         echo Html::input('jumpserver_access_key_secret', [
             'id'           => 'jumpserver_access_key_secret',
             'type'         => 'password',
             'class'        => 'form-control',
-            'value'        => $config_values['jumpserver_access_key_secret'],
+            'placeholder'  => $secret_stored
+                ? __('Stored - leave blank to keep it', 'integrasipaman')
+                : __('Not set', 'integrasipaman'),
             // Without this, Chromium-based browsers may silently offer to
             // autofill this field with an unrelated saved password on page
             // load - invisible since the field masks its contents, and only
             // noticed later when JumpServer starts rejecting the signature.
             'autocomplete' => 'new-password',
-            'required'     => 'required',
+            // Not `'required' => false`: Html::input() prints every key, and
+            // required="" is still required.
+            ...($secret_stored ? [] : ['required' => 'required']),
         ]);
         echo '</div>';
 
-        echo '<div class="mb-3">';
-        echo '<label class="form-label" for="jumpserver_org_id">' . __('Organization ID') . '</label>';
+        echo '<div class="col-12">';
+        echo '<label class="form-label required" for="jumpserver_org_id">' . __('Organization ID') . '</label>';
         echo Html::input('jumpserver_org_id', [
             'id'       => 'jumpserver_org_id',
-            'class'    => 'form-control',
+            'class'    => 'form-control font-monospace',
             'value'    => $config_values['jumpserver_org_id'],
             'required' => 'required',
         ]);
         echo '</div>';
 
-        echo '<hr class="my-4">';
-        echo '<h4>' . __('PBI Reporting Database (read-only)', 'integrasipaman') . '</h4>';
-        echo '<p class="text-muted">' . __('Separate MySQL server hosting the jumpserver_pbi_views reporting schema, used by the JumpServer PBI Insights page under Tools.', 'integrasipaman') . '</p>';
+        self::closeSection();
 
-        echo '<div class="mb-3">';
+        // --- PBI reporting database ----------------------------------------
+        self::openSection('pbi', $sections['pbi']);
+
+        echo '<div class="col-md-6">';
         echo '<label class="form-label" for="jumpserver_pbi_db_host">' . __('PBI DB Host', 'integrasipaman') . '</label>';
         echo Html::input('jumpserver_pbi_db_host', [
             'id'    => 'jumpserver_pbi_db_host',
@@ -275,7 +567,7 @@ class PluginIntegrasipamanConfig extends CommonDBTM
         ]);
         echo '</div>';
 
-        echo '<div class="mb-3">';
+        echo '<div class="col-md-2">';
         echo '<label class="form-label" for="jumpserver_pbi_db_port">' . __('PBI DB Port', 'integrasipaman') . '</label>';
         echo Html::input('jumpserver_pbi_db_port', [
             'id'    => 'jumpserver_pbi_db_port',
@@ -284,7 +576,7 @@ class PluginIntegrasipamanConfig extends CommonDBTM
         ]);
         echo '</div>';
 
-        echo '<div class="mb-3">';
+        echo '<div class="col-md-4">';
         echo '<label class="form-label" for="jumpserver_pbi_db_name">' . __('PBI Database Name', 'integrasipaman') . '</label>';
         echo Html::input('jumpserver_pbi_db_name', [
             'id'    => 'jumpserver_pbi_db_name',
@@ -293,7 +585,7 @@ class PluginIntegrasipamanConfig extends CommonDBTM
         ]);
         echo '</div>';
 
-        echo '<div class="mb-3">';
+        echo '<div class="col-md-6">';
         echo '<label class="form-label" for="jumpserver_pbi_db_user">' . __('PBI DB Username', 'integrasipaman') . '</label>';
         echo Html::input('jumpserver_pbi_db_user', [
             'id'    => 'jumpserver_pbi_db_user',
@@ -302,32 +594,43 @@ class PluginIntegrasipamanConfig extends CommonDBTM
         ]);
         echo '</div>';
 
-        echo '<div class="mb-3">';
+        echo '<div class="col-md-6">';
+        $pbi_password_stored = $connection !== null && $connection->hasSecret('pbi_db_password');
         echo '<label class="form-label" for="jumpserver_pbi_db_password">' . __('PBI DB Password', 'integrasipaman') . '</label>';
         echo Html::input('jumpserver_pbi_db_password', [
             'id'           => 'jumpserver_pbi_db_password',
             'type'         => 'password',
             'class'        => 'form-control',
-            'value'        => $config_values['jumpserver_pbi_db_password'],
+            'placeholder'  => $pbi_password_stored
+                ? __('Stored - leave blank to keep it', 'integrasipaman')
+                : __('Not set', 'integrasipaman'),
             'autocomplete' => 'new-password',
         ]);
+        // Blank means "keep", so clearing an optional password needs its own control.
+        if ($pbi_password_stored && $canedit) {
+            echo '<label class="form-check mt-2">';
+            echo '<input type="checkbox" class="form-check-input" name="_clear_jumpserver_pbi_db_password" value="1">';
+            echo '<span class="form-check-label">' . __('Remove the stored password', 'integrasipaman') . '</span>';
+            echo '</label>';
+        }
         echo '</div>';
 
-        echo '<hr class="my-4">';
-        echo '<h4>' . __('Terminal Command Audit', 'integrasipaman') . '</h4>';
-        echo '<p class="text-muted">' . __('Pull of JumpServer terminal command & session records into GLPI (daily cron "Pull JumpServer terminal command & session records"). Feeds the command-audit reports.', 'integrasipaman') . '</p>';
+        self::closeSection();
 
-        echo '<div class="mb-3">';
+        // --- Terminal command audit ----------------------------------------
+        self::openSection('terminal', $sections['terminal']);
+
+        echo '<div class="col-12">';
         echo '<label class="form-label" for="jumpserver_command_storage_id">' . __('Command Storage ID', 'integrasipaman') . '</label>';
         echo Html::input('jumpserver_command_storage_id', [
             'id'    => 'jumpserver_command_storage_id',
-            'class' => 'form-control',
+            'class' => 'form-control font-monospace',
             'value' => $config_values['jumpserver_command_storage_id'],
         ]);
         echo '<small class="form-hint">' . __('Required. The command_storage_id from JumpServer (Console > Command Storage).', 'integrasipaman') . '</small>';
         echo '</div>';
 
-        echo '<div class="mb-3">';
+        echo '<div class="col-md-6">';
         echo '<label class="form-label" for="jumpserver_terminal_retention_months">' . __('Retention (months)', 'integrasipaman') . '</label>';
         echo Html::input('jumpserver_terminal_retention_months', [
             'id'    => 'jumpserver_terminal_retention_months',
@@ -340,7 +643,7 @@ class PluginIntegrasipamanConfig extends CommonDBTM
         echo '<small class="form-hint">' . __('Command & session rows older than this are deleted on each cron run. Default 13.', 'integrasipaman') . '</small>';
         echo '</div>';
 
-        echo '<div class="mb-3">';
+        echo '<div class="col-md-6">';
         echo '<label class="form-label" for="jumpserver_terminal_backfill_months">' . __('First-run backfill (months)', 'integrasipaman') . '</label>';
         echo Html::input('jumpserver_terminal_backfill_months', [
             'id'    => 'jumpserver_terminal_backfill_months',
@@ -353,38 +656,51 @@ class PluginIntegrasipamanConfig extends CommonDBTM
         echo '<small class="form-hint">' . __('How many months of history the first cron run pulls. Default 13.', 'integrasipaman') . '</small>';
         echo '</div>';
 
-        echo '<hr class="my-4">';
-        echo '<h4>' . __('Command Risk Evaluation', 'integrasipaman') . '</h4>';
-        echo '<p class="text-muted">' . __('Rules for classifying terminal commands (cron "Classify JumpServer command records", every 15 min). One entry per line; blank lines and lines starting with # are ignored. Editing any list re-evaluates all history automatically.', 'integrasipaman') . '</p>';
+        self::closeSection();
+
+        // --- Command risk evaluation ---------------------------------------
+        self::openSection('risk', $sections['risk']);
 
         foreach ([
             'jumpserver_risk_keywords'          => [__('High-risk keywords', 'integrasipaman'), __('A command containing any of these (or JumpServer risk level >= 4) is flagged high-risk.', 'integrasipaman'), 8],
-            'jumpserver_admin_users'            => [__('Fallback: admin users', 'integrasipaman'), __('Used only when a command\'s user has no GLPI match. Format: Full Name(login). High-risk actions by these users on production assets are MEDIUM, not HIGH.', 'integrasipaman'), 6],
+            'jumpserver_admin_users'            => [__('Fallback: admin users', 'integrasipaman'), __('Used only when a command\'s user has no GLPI match. Format: Full Name(login). High-risk actions by these users on production assets are MEDIUM, not HIGH.', 'integrasipaman'), 8],
             'jumpserver_production_ip_prefixes' => [__('Fallback: production IP prefixes', 'integrasipaman'), __('Used only when a command\'s asset resolves to no GLPI IPNetwork or Computer. An asset whose IP starts with one of these is "production". e.g. 10.0.0.', 'integrasipaman'), 3],
+            'jumpserver_development_ip_prefixes' => [__('Fallback: development IP prefixes', 'integrasipaman'), __('An asset whose IP starts with one of these is "development". An asset matching neither list is left unclassified and scores MEDIUM until someone classifies it on the correlation form.', 'integrasipaman'), 3],
+            'jumpserver_command_categories'     => [__('Command categories', 'integrasipaman'), __('One per line, "Name: word1, word2". Line order decides which category wins when two match. A name over 32 characters is stored shortened to 32 characters. Keep the trailing space in "su " - without it the keyword also matches sudo and sudoers. A command matching nothing reads as Belum Dikategorikan. Categories group commands only; they never change a risk level.', 'integrasipaman'), 6],
         ] as $key => [$label, $hint, $rows]) {
-            echo '<div class="mb-3">';
+            // The category list is one wide line per category; the four
+            // short lists pair up two per row.
+            echo '<div class="' . ($key === 'jumpserver_command_categories' ? 'col-12' : 'col-md-6') . '">';
             echo '<label class="form-label" for="' . $key . '">' . htmlescape($label) . '</label>';
-            echo '<textarea class="form-control" id="' . $key . '" name="' . $key . '" rows="' . (int) $rows . '">'
+            echo '<textarea class="form-control" id="' . $key . '" name="' . $key . '" rows="' . (int) $rows . '" spellcheck="false">'
                 . htmlescape($config_values[$key]) . '</textarea>';
             echo '<small class="form-hint">' . htmlescape($hint) . '</small>';
             echo '</div>';
         }
 
-        echo '<hr class="my-4">';
-        echo '<h4>' . __('Asset & User Correlation', 'integrasipaman') . '</h4>';
-        echo '<p class="text-muted">' . __('Resolve each command\'s asset and user against GLPI instead of the fallback lists above. Runs at the start of the "Classify JumpServer command records" cron and whenever you save this page.', 'integrasipaman') . '</p>';
+        self::closeSection();
 
-        echo '<div class="mb-3">';
+        // --- Asset & user correlation --------------------------------------
+        self::openSection(
+            'correlation',
+            $sections['correlation'],
+            '<a class="btn btn-sm btn-outline-secondary text-nowrap" href="' . Plugin::getWebDir('integrasipaman') . '/front/correlation.php">'
+                . '<i class="ti ti-arrows-exchange me-1"></i>' . htmlescape(__('Manage asset & user mappings', 'integrasipaman')) . '</a>'
+        );
+
+        echo '<div class="col-12">';
         echo '<label class="form-label" for="correlation_match_mode">' . __('Asset match mode', 'integrasipaman') . '</label>';
         Dropdown::showFromArray('correlation_match_mode', [
             'ip_only'   => __('IP only - test the IP parsed from the asset string', 'integrasipaman'),
             'name_only' => __('Computer name only - test the GLPI Computer\'s IP address(es)', 'integrasipaman'),
             'hybrid'    => __('Hybrid - parsed IP first, then the matched Computer\'s IPs', 'integrasipaman'),
+            'hybrid_name' => __('Hybrid - Computer name first, then the parsed IP', 'integrasipaman'),
         ], ['value' => $config_values['correlation_match_mode'], 'width' => '100%']);
+        echo '<div class="form-hint">' . __('Pick the last mode when several Computers share an IP address in GLPI: it matches the asset by name first and only falls back to the IP when no Computer carries that name. The other three always match by IP first, which on a shared IP silently takes the lowest Computer id.', 'integrasipaman') . '</div>';
         echo '</div>';
 
         if (Plugin::isPluginActive('addressing')) {
-            echo '<div class="mb-3">';
+            echo '<div class="col-12">';
             echo '<label class="form-label">' . __('Production IP ranges (Tools > IP Addressing)', 'integrasipaman') . '</label>';
             $addr = [];
             foreach ($DB->request([
@@ -407,7 +723,7 @@ class PluginIntegrasipamanConfig extends CommonDBTM
             echo '</div>';
         }
 
-        echo '<div class="mb-3">';
+        echo '<div class="col-md-6">';
         echo '<label class="form-label">' . __('Production networks (core IPNetwork)', 'integrasipaman') . '</label>';
         $networks = [];
         // glpi_ipnetworks is a tree dropdown - no is_deleted column.
@@ -426,7 +742,7 @@ class PluginIntegrasipamanConfig extends CommonDBTM
         echo '<small class="form-hint">' . htmlescape(__('An asset whose tested IP falls inside any selected network is "production". Leave empty if you use the IP Addressing ranges above (core IPNetwork is often auto-populated).', 'integrasipaman')) . '</small>';
         echo '</div>';
 
-        echo '<div class="mb-3">';
+        echo '<div class="col-md-6">';
         echo '<label class="form-label">' . __('Admin groups', 'integrasipaman') . '</label>';
         $groups = [];
         foreach ($DB->request(['FROM' => 'glpi_groups', 'WHERE' => ['is_usergroup' => 1], 'ORDER' => 'name ASC']) as $g) {
@@ -440,34 +756,185 @@ class PluginIntegrasipamanConfig extends CommonDBTM
         echo '<small class="form-hint">' . htmlescape(__('A command\'s user who is a direct member of any selected group is a sanctioned admin (their high-risk production actions are MEDIUM, not HIGH). Child groups are not included - select each group explicitly.', 'integrasipaman')) . '</small>';
         echo '</div>';
 
-        echo '<div class="mb-3">';
-        echo '<a class="btn btn-outline-secondary" href="' . Plugin::getWebDir('integrasipaman') . '/front/correlation.php">'
-            . htmlescape(__('Manage asset & user mappings', 'integrasipaman')) . '</a>';
+        self::closeSection();
+
+        // --- Asset provisioning --------------------------------------------
+        self::openSection('provisioning', $sections['provisioning']);
+
+        echo '<div class="col-md-6">';
+        echo '<label class="form-label">' . __('Eligible computer types', 'integrasipaman') . '</label>';
+        $prov_types = [];
+        foreach ($DB->request(['FROM' => 'glpi_computertypes', 'ORDER' => 'name ASC']) as $t) {
+            $prov_types[(int) $t['id']] = (string) $t['name'];
+        }
+        Dropdown::showFromArray('provisioning_eligible_types', $prov_types, [
+            'values'   => array_values(array_filter(array_map('intval', explode(',', (string) $config_values['provisioning_eligible_types'])))),
+            'multiple' => true,
+            'width'    => '100%',
+        ]);
+        echo '<small class="form-hint">' . htmlescape(PluginIntegrasipamanServerLabel::in(__('Also the source of the {server} node: each eligible type is mapped to a node on the Node mapping list.', 'integrasipaman'))) . '</small>';
         echo '</div>';
 
+        echo '<div class="col-md-6">';
+        echo '<label class="form-label">' . __('Eligible entities', 'integrasipaman') . '</label>';
+        $prov_entities = [];
+        foreach ($DB->request(['FROM' => 'glpi_entities', 'ORDER' => 'completename ASC']) as $e) {
+            $prov_entities[(int) $e['id']] = trim((string) ($e['completename'] ?: $e['name'])) ?: ('#' . $e['id']);
+        }
+        Dropdown::showFromArray('provisioning_eligible_entities', $prov_entities, [
+            // Entity 0 is the Root Entity and a legitimate selection. A bare
+            // array_filter() drops it as falsy, so a saved Root Entity would
+            // render as unselected and be lost on the next save - which is
+            // why the save path in front/config.form.php uses >= 0 too.
+            'values'   => array_values(array_filter(
+                array_map('intval', explode(',', (string) $config_values['provisioning_eligible_entities'])),
+                static fn ($n) => $n >= 0
+            )),
+            'multiple' => true,
+            'width'    => '100%',
+        ]);
+        echo '<small class="form-hint">' . htmlescape(__('Leave empty to accept every entity.', 'integrasipaman')) . '</small>';
+        echo '</div>';
+
+        $prov_states = [];
+        foreach ($DB->request(['FROM' => 'glpi_states', 'ORDER' => 'name ASC']) as $s) {
+            $prov_states[(int) $s['id']] = (string) $s['name'];
+        }
+
+        echo '<div class="col-md-6">';
+        echo '<label class="form-label">' . __('Eligible statuses', 'integrasipaman') . '</label>';
+        Dropdown::showFromArray('provisioning_eligible_states', $prov_states, [
+            'values'   => array_values(array_filter(array_map('intval', explode(',', (string) $config_values['provisioning_eligible_states'])))),
+            'multiple' => true,
+            'width'    => '100%',
+        ]);
+        echo '<small class="form-hint">' . htmlescape(__('Only Computers in one of these statuses are offered for sending.', 'integrasipaman')) . '</small>';
+        echo '</div>';
+
+        echo '<div class="col-md-6">';
+        echo '<label class="form-label">' . __('Dispose statuses', 'integrasipaman') . '</label>';
+        Dropdown::showFromArray('provisioning_dispose_states', $prov_states, [
+            'values'   => array_values(array_filter(array_map('intval', explode(',', (string) $config_values['provisioning_dispose_states'])))),
+            'multiple' => true,
+            'width'    => '100%',
+        ]);
+        echo '<small class="form-hint">' . htmlescape(PluginIntegrasipamanServerLabel::in(__('A Computer that reaches one of these statuses is marked for removal from {server}. Marking is automatic; the removal itself still needs a button and a ticket.', 'integrasipaman'))) . '</small>';
+        echo '</div>';
+
+        echo '<div class="col-md-6">';
+        echo '<label class="form-label">' . __('Approval ticket statuses', 'integrasipaman') . '</label>';
+        Dropdown::showFromArray('provisioning_ticket_statuses', [
+            1 => __('New'),
+            2 => __('Processing (assigned)'),
+            3 => __('Processing (planned)'),
+            4 => __('Pending'),
+            5 => __('Solved'),
+            6 => __('Closed'),
+        ], [
+            'values'   => array_values(array_filter(array_map('intval', explode(',', (string) $config_values['provisioning_ticket_statuses'])))),
+            'multiple' => true,
+            'width'    => '100%',
+        ]);
+        echo '<small class="form-hint">' . htmlescape(__('A removal may only cite a ticket in one of these statuses. A ticket still being worked on is not an approval.', 'integrasipaman')) . '</small>';
+        echo '</div>';
+
+        echo '<div class="col-md-6">';
+        echo '<label class="form-label" for="provisioning_ip_prefixes">' . __('Eligible IP prefixes', 'integrasipaman') . '</label>';
+        echo '<textarea class="form-control" id="provisioning_ip_prefixes" name="provisioning_ip_prefixes" rows="3" spellcheck="false">'
+            . htmlescape($config_values['provisioning_ip_prefixes']) . '</textarea>';
+        echo '<small class="form-hint">' . htmlescape(__('One prefix per line, e.g. 10.0.0. - a Computer whose address starts with any of them passes. Leave empty to accept any address.', 'integrasipaman')) . '</small>';
+        echo '</div>';
+
+        self::closeSection();
+
+        echo '</div>'; // .tab-content
+
+        // One Save for every tab, as on opmanager. Re-evaluate sits beside it
+        // but submits its own form (below) through the HTML5 form= attribute -
+        // forms cannot nest.
         if ($canedit) {
-            echo '<div class="mb-3">';
-            echo Html::submit(__('Save'), ['name' => 'update_btn', 'class' => 'btn btn-primary']);
+            echo '<div class="integrasipaman-actions d-flex flex-wrap align-items-center gap-2">';
+            // Html::submit() escapes its caption; the icon goes through 'icon'.
+            echo Html::submit(__('Save'), ['name' => 'update_btn', 'class' => 'btn btn-primary', 'icon' => 'ti ti-device-floppy']);
+            echo '<button type="submit" name="reeval" value="1" form="integrasipaman-reeval-form" class="btn btn-outline-secondary">'
+                . '<i class="ti ti-refresh me-1"></i>' . htmlescape(__('Re-evaluate now', 'integrasipaman')) . '</button>';
+            echo '<small class="text-muted">' . htmlescape(__('Save first if you changed a rule list. Runs for up to ~20 seconds; the cron finishes anything left.', 'integrasipaman')) . '</small>';
             echo '</div>';
-        } else {
-            echo '<div class="alert alert-info">' . htmlescape(__('You have read-only access to this configuration.', 'integrasipaman')) . '</div>';
         }
 
         Html::closeForm();
 
-        // Separate, non-nested POST form for the "Re-evaluate now" trigger.
-        // Html::closeForm() emits the _glpi_csrf_token hidden field that
-        // GLPI's Kernel-level CheckCsrfListener validates for the POST.
+        // The Re-evaluate trigger's own POST form, left empty: its button lives
+        // next to Save above. Html::closeForm() emits the _glpi_csrf_token
+        // hidden field that GLPI's Kernel-level CheckCsrfListener validates.
         if ($canedit) {
-            echo '<form method="post" action="' . Plugin::getWebDir('integrasipaman') . '/front/reeval.php">';
-            echo '<div class="mb-3">';
-            echo Html::submit(__('Re-evaluate now', 'integrasipaman'), ['name' => 'reeval', 'class' => 'btn btn-outline-secondary']);
-            echo '<small class="form-hint d-block">' . htmlescape(__('Save first if you changed a list above. Runs for up to ~20 seconds; the cron finishes anything left.', 'integrasipaman')) . '</small>';
-            echo '</div>';
+            echo '<form id="integrasipaman-reeval-form" method="post" action="' . Plugin::getWebDir('integrasipaman') . '/front/reeval.php">';
             Html::closeForm();
         }
 
-        echo '</div>'; // card-body
-        echo '</div>'; // card
+        // 1. Reopen the last tab after Save / reload (per browser tab; harmless
+        //    when storage is blocked) - the same behaviour as opmanager's Setup.
+        // 2. Access Key ID / Secret / Org ID are `required`. When their tab is
+        //    hidden the browser refuses the submit and cannot show its message
+        //    on a hidden control, so Save looks dead. The capture-phase
+        //    'invalid' listener opens the tab holding the first invalid field;
+        //    the panes have no fade, so it is visible before the browser
+        //    focuses it.
+        echo Html::scriptBlock(<<<'JS'
+(function () {
+    var root = document.querySelector('.integrasipaman-config');
+    var form = document.getElementById('jumpserver_config_form');
+    if (!root || !form) { return; }
+    var key = 'integrasipaman-setup-tab';
+    function show(link) {
+        if (link && window.bootstrap) { bootstrap.Tab.getOrCreateInstance(link).show(); }
+    }
+    try {
+        var saved = sessionStorage.getItem(key);
+        if (saved) { show(root.querySelector('a[data-bs-toggle="tab"][href="' + saved + '"]')); }
+    } catch (e) {}
+    root.querySelectorAll('a[data-bs-toggle="tab"]').forEach(function (link) {
+        link.addEventListener('shown.bs.tab', function () {
+            try { sessionStorage.setItem(key, link.getAttribute('href')); } catch (e) {}
+        });
+    });
+    form.addEventListener('invalid', function (ev) {
+        var pane = ev.target.closest('.tab-pane');
+        if (pane && !pane.classList.contains('active')) {
+            show(root.querySelector('a[data-bs-toggle="tab"][href="#' + pane.id + '"]'));
+        }
+    }, true);
+})();
+JS);
+
+        echo '</div>'; // .integrasipaman-config
+    }
+
+    /**
+     * Open one section's tab pane and its field grid.
+     *
+     * @param array{0:string,1:string,2:string,3:string} $section [title, icon, description, tab label]
+     * @param string $action Pre-escaped HTML shown beside the description.
+     * @param bool   $active True for the pane shown on load (the first one).
+     */
+    private static function openSection(string $key, array $section, string $action = '', bool $active = false): void
+    {
+        [$title, , $description] = $section;
+
+        echo '<div class="tab-pane' . ($active ? ' active show' : '') . '" role="tabpanel" id="' . 'integrasipaman-sec-' . $key . '">';
+        echo '<div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-3">';
+        echo '<div>';
+        echo '<h4 class="mb-1">' . htmlescape($title) . '</h4>';
+        echo '<div class="text-muted small">' . htmlescape($description) . '</div>';
+        echo '</div>';
+        echo $action;
+        echo '</div>';
+        echo '<div class="row g-3">';
+    }
+
+    /** Close the grid and pane opened by openSection(). */
+    private static function closeSection(): void
+    {
+        echo '</div></div>';
     }
 }

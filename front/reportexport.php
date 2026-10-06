@@ -21,7 +21,7 @@ Session::checkLoginUser();
 // UPDATE, which used to hand the whole of Setup > General to anyone who
 // needed these reports.
 include_once(__DIR__ . '/../inc/profile.class.php');
-Session::checkRight(PluginIntegrasipamanProfile::RIGHT, READ);
+Session::checkRight(PluginIntegrasipamanProfile::RIGHT_REPORT, READ);
 
 $report = (string) ($_GET['report'] ?? '');
 $format = (string) ($_GET['format'] ?? '');
@@ -56,8 +56,36 @@ $period = PluginIntegrasipamanReport::resolvePeriod([
 
 $opts = [];
 if ($report === 'evaluasi_highrisk') {
-    // export = the whole period set, honouring an explicit sort only
-    $opts = ['sort' => (string) ($_GET['sort'] ?? ''), 'dir' => (string) ($_GET['dir'] ?? 'desc')];
+    // export = the whole matching set, honouring an explicit sort and the
+    // on-screen search. The search selects ROWS, so someone who filters the
+    // table and then clicks Excel means those rows - all of them, not the
+    // page they can see. Hidden columns are a screen setting and never reach
+    // here: a file that silently lost columns is worse than a wide one.
+    //
+    // The Evaluation summary's catatan drill-down is a row filter by the
+    // same reasoning, and is exported the same way - it rides in as
+    // "catatan" (the screen's hr_catatan, carried into this link as
+    // "catatan" the way hr_q is carried in as "q"). Leaving it out here
+    // would mean clicking a summary count, seeing only its rows on screen,
+    // then exporting the whole period anyway - merging back the two catatan
+    // populations (Aktivitas Admin and Aset Belum Diklasifikasi) that this
+    // filter exists to keep apart, in a file an auditor may forward as
+    // evidence of exactly the wrong thing.
+    $opts = [
+        'sort'    => (string) ($_GET['sort'] ?? ''),
+        'dir'     => (string) ($_GET['dir'] ?? 'desc'),
+        'q'       => (string) ($_GET['q'] ?? ''),
+        // ANDed with the catatan, the same way the screen does it: the
+        // summary groups on priority AND catatan, so an export keyed on the
+        // catatan alone could hand back MORE rows than the screen showed.
+        'catatan'  => (string) ($_GET['catatan'] ?? ''),
+        'priority' => (string) ($_GET['priority'] ?? ''),
+        // The High-risk by category card's drill-down, exported the same
+        // way: without this, clicking a category then Excel hands back a
+        // wider set than the screen - the defect v3.7.0 fixed for the
+        // catatan, recurring in this same code path.
+        'kategori' => (string) ($_GET['kategori'] ?? ''),
+    ];
 }
 
 $data      = PluginIntegrasipamanReport::report($report, $period, $opts);

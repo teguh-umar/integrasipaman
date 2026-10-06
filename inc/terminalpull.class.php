@@ -18,6 +18,7 @@ if (!defined('GLPI_ROOT')) {
 }
 
 require_once __DIR__ . '/jmsapi.class.php';
+require_once __DIR__ . '/apiwindow.class.php';
 require_once __DIR__ . '/config.class.php';
 
 class PluginIntegrasipamanTerminalPull extends CommonDBTM
@@ -164,7 +165,8 @@ class PluginIntegrasipamanTerminalPull extends CommonDBTM
             $iterator = $DB->request([
                 'SELECT' => $id_col,
                 'FROM'   => $table,
-                'WHERE'  => [$id_col => array_keys($incoming_ids)],
+                // Within this connection: two JumpServers may issue the same id.
+                'WHERE'  => [$id_col => array_keys($incoming_ids)] + PluginIntegrasipamanConnection::ownRows(),
             ]);
             foreach ($iterator as $r) {
                 $existing[(string) $r[$id_col]] = true;
@@ -250,12 +252,8 @@ class PluginIntegrasipamanTerminalPull extends CommonDBTM
             throw new InvalidArgumentException('Month must be YYYY-MM');
         }
 
-        $config            = Config::getConfigurationValues(PluginIntegrasipamanConfig::CONFIG_CONTEXT);
-        $base_url          = trim($config['jumpserver_url'] ?? '');
-        $access_key_id     = trim($config['jumpserver_access_key_id'] ?? '');
-        $access_key_secret = trim($config['jumpserver_access_key_secret'] ?? '');
-        $org_id            = trim($config['jumpserver_org_id'] ?? '');
-        $storage_id        = trim($config['jumpserver_command_storage_id'] ?? '');
+        [$base_url, $access_key_id, $access_key_secret, $org_id] = PluginIntegrasipamanConnection::currentCredentials();
+        $storage_id = PluginIntegrasipamanConnection::currentValue('command_storage_id');
 
         $blank  = ['fetched' => 0, 'inserted' => 0, 'skipped' => 0, 'empty_id' => 0, 'null_date' => 0, 'ok' => false, 'complete' => false];
         $result = ['commands' => $blank, 'sessions' => $blank];
@@ -282,6 +280,8 @@ class PluginIntegrasipamanTerminalPull extends CommonDBTM
                 $cmd_path, $base_url, $access_key_id, $access_key_secret, $org_id,
                 static function (array $page) use (&$acc): void {
                     $rows = array_map([self::class, 'mapCommandEntry'], array_filter($page, 'is_array'));
+                    // v3.11.0: the entity of a command is decided here, once.
+                    $rows = PluginIntegrasipamanConnection::stampRows($rows);
                     $acc['fetched']   += count($rows);
                     $acc['null_date'] += count(array_filter($rows, static fn($r) => $r['executed_at'] === null));
                     $c = self::insertDedup(self::COMMANDS_TABLE, 'jms_id', $rows);
@@ -296,26 +296,44 @@ class PluginIntegrasipamanTerminalPull extends CommonDBTM
         }
 
         // --- Sessions -------------------------------------------------
+        // Unlike /terminal/commands/, /terminal/sessions/ does NOT document
+        // date_from/date_to (swagger documents the numeric days/days__lt pair
+        // instead). DRF ignores query params outside a view's filterset, so
+        // these two may do nothing at all, which would silently turn this
+        // "one month" pull into a full-history pull that dedup then hides.
+        // They are still sent - free if honoured - and the window is enforced
+        // client-side by PluginIntegrasipamanApiWindow, which also decides
+        // when it is safe to stop paging early. See inc/apiwindow.class.php.
+        //
+        // DO NOT switch this to days/days__lt: probed live 2026-09-22 against
+        // paman.example.com, both return **HTTP 500** here, with and without
+        // `order`. `order` itself IS honoured, so the early stop engages and
+        // the pull is already bounded. Re-probe before reopening this.
         $acc = ['fetched' => 0, 'inserted' => 0, 'skipped' => 0, 'empty_id' => 0, 'null_date' => 0];
         $sess_path = self::SESSIONS_PATH . '?' . http_build_query([
             'date_from' => $date_from,
             'date_to'   => $date_to,
             'order'     => '-date_start',
         ]);
+        $window = new PluginIntegrasipamanApiWindow('date_start', $date_from, $date_to);
         $complete = PluginIntegrasipamanJmsApi::signedGetEach(
             $sess_path, $base_url, $access_key_id, $access_key_secret, $org_id,
-            static function (array $page) use (&$acc): void {
-                $rows = array_map([self::class, 'mapSessionEntry'], array_filter($page, 'is_array'));
+            static function (array $page) use (&$acc, $window) {
+                $rows = array_map([self::class, 'mapSessionEntry'], $window->filter($page));
+                $rows = PluginIntegrasipamanConnection::stampRows($rows);
                 $acc['fetched']   += count($rows);
                 $acc['null_date'] += count(array_filter($rows, static fn($r) => $r['date_start'] === null));
                 $c = self::insertDedup(self::SESSIONS_TABLE, 'jms_id', $rows);
                 $acc['inserted'] += $c['inserted'];
                 $acc['skipped']  += $c['skipped'];
                 $acc['empty_id'] += $c['empty_id'];
+
+                return !$window->canStop();
             },
             self::TERMINAL_PAGE_SIZE,
             self::TERMINAL_MAX_PAGES
         );
+        $acc['out_of_window'] = $window->stats()['dropped'];
         $result['sessions'] = $acc + ['ok' => !($complete === false && $acc['fetched'] === 0), 'complete' => $complete];
 
         return $result;
@@ -392,10 +410,12 @@ class PluginIntegrasipamanTerminalPull extends CommonDBTM
         $count = $DB->request([
             'COUNT' => 'c',
             'FROM'  => $table,
+            // This connection's rows: a month another JumpServer has filled
+            // is still an empty month for this one.
             'WHERE' => [
                 [$date_col => ['>=', $start]],
                 [$date_col => ['<=', $end]],
-            ],
+            ] + PluginIntegrasipamanConnection::ownRows(),
         ])->current()['c'] ?? 0;
 
         return $count > 0;
@@ -463,13 +483,70 @@ class PluginIntegrasipamanTerminalPull extends CommonDBTM
         // Never pull a month we would delete minutes later in the same run.
         $backfill = min($backfill, $retention);
 
-        if (trim($config['jumpserver_url'] ?? '') === ''
-            || trim($config['jumpserver_access_key_id'] ?? '') === ''
-            || trim($config['jumpserver_access_key_secret'] ?? '') === ''
-            || trim($config['jumpserver_command_storage_id'] ?? '') === '') {
+        // v4.0.0: one pull per connection. A connection that is not
+        // configured, fails or throws is logged and skipped; the others
+        // still run, and the retention prune below runs regardless.
+        $connections = PluginIntegrasipamanConnection::all();
+        if ($connections === []) {
             $task->log('JumpServer URL / Access Key ID / Access Key Secret / Command Storage ID not configured. Skipping.');
             $task->setVolume(0);
             return 0;
+        }
+
+        $several  = count($connections) > 1;
+        $inserted = 0;
+        $any_ok   = false;
+
+        $runs = PluginIntegrasipamanConnection::each(
+            static function (PluginIntegrasipamanConnection $connection) use ($task, $several, $backfill): array {
+                if ($several) {
+                    $task->log(sprintf('--- connection "%s" (entity %d) ---', $connection->label(), $connection->entity()));
+                }
+                return self::pullTerminalFor($task, $connection, $backfill);
+            }
+        );
+
+        foreach ($runs as $run) {
+            if ($run['error'] !== '') {
+                $task->log(sprintf('Connection "%s": the pull stopped: %s', $run['connection']->label(), $run['error']));
+                continue;
+            }
+            $inserted += $run['result']['inserted'];
+            $any_ok    = $any_ok || $run['result']['ok'];
+        }
+
+        // Retention is one setting for the whole instance, so one prune.
+        $pruned = self::prune($retention);
+        $task->log(sprintf(
+            'Retention prune (> %d months): %d command rows, %d session rows deleted.',
+            $retention,
+            $pruned['commands'],
+            $pruned['sessions']
+        ));
+
+        $task->setVolume($inserted);
+
+        return $any_ok ? 1 : 0;
+    }
+
+    /**
+     * The terminal pull for one connection, which is the current one.
+     *
+     * @return array{ok: bool, inserted: int} ok is false when the connection
+     *         is not configured, or when its very first endpoint call failed
+     *         and nothing at all was imported or skipped - the same rule as
+     *         PluginIntegrasipamanCron::cronPull_historical_logs.
+     */
+    private static function pullTerminalFor(CronTask $task, PluginIntegrasipamanConnection $connection, int $backfill): array
+    {
+        [$base_url, $access_key_id, $access_key_secret] = $connection->credentials();
+
+        if ($base_url === ''
+            || $access_key_id === ''
+            || $access_key_secret === ''
+            || $connection->get('command_storage_id') === '') {
+            $task->log('JumpServer URL / Access Key ID / Access Key Secret / Command Storage ID not configured. Skipping.');
+            return ['ok' => false, 'inserted' => 0];
         }
 
         $months = self::monthsToPull($backfill);
@@ -501,19 +578,9 @@ class PluginIntegrasipamanTerminalPull extends CommonDBTM
             }
         }
 
-        $pruned = self::prune($retention);
-        $task->log(sprintf(
-            'Retention prune (> %d months): %d command rows, %d session rows deleted.',
-            $retention,
-            $pruned['commands'],
-            $pruned['sessions']
-        ));
-
-        $task->setVolume($total_inserted);
-
-        // Hard failure only if the very first endpoint call failed and
-        // nothing at all was imported or skipped - same rule as
-        // PluginIntegrasipamanCron::cronPull_historical_logs.
-        return ($first_call_failed === true && $total_inserted === 0 && $total_skipped === 0) ? 0 : 1;
+        return [
+            'ok'       => !($first_call_failed === true && $total_inserted === 0 && $total_skipped === 0),
+            'inserted' => $total_inserted,
+        ];
     }
 }

@@ -20,6 +20,8 @@ if (!defined('GLPI_ROOT')) {
     die('Sorry. You can not access this file directly');
 }
 
+require_once __DIR__ . '/connection.class.php';
+
 class PluginIntegrasipamanDashboard extends CommonGLPI
 {
     /**
@@ -54,36 +56,11 @@ class PluginIntegrasipamanDashboard extends CommonGLPI
      */
     public const EXPORT_ROW_LIMIT = 5000;
 
-    /**
-     * Menu entry content for $PLUGIN_HOOKS['menu_toadd']['tools'] (see
-     * setup.php's plugin_init_integrasipaman()). Overrides CommonGLPI's
-     * default implementation directly rather than calling
-     * parent::getMenuContent(): the default assumes a CommonDBTM
-     * search-page itemtype (canView(), getSearchURL(), ...), none of
-     * which apply to this class - it is not a searchable item type, just
-     * a place to hang dashboard/menu hooks.
-     *
-     * Gated on the same plugin right (READ) front/pbi.php itself
-     * requires: the linked page surfaces PAM audit detail from a
-     * separate database, so the menu entry is hidden entirely for users
-     * who would only get denied - GLPI silently omits a menu category
-     * whose 'types' array yields no content, so returning [] here is
-     * enough to hide it.
-     *
-     * @return array<string, string>
-     */
-    public static function getMenuContent(): array
-    {
-        if (!Session::haveRight(PluginIntegrasipamanProfile::RIGHT, READ)) {
-            return [];
-        }
-
-        return [
-            'title' => __('JumpServer Integration', 'integrasipaman'),
-            'page'  => Plugin::getWebDir('integrasipaman') . '/front/pbi.php',
-            'icon'  => 'ti ti-terminal-2',
-        ];
-    }
+    // The sidebar menu used to be a single Tools entry served by a
+    // getMenuContent() here. It is now one entry in the shared suite menu,
+    // with the plugin's pages as its options - see inc/menu.class.php - so this class is back to
+    // being only what its name says: dashboard cards plus the shared
+    // query/filter helpers front/export.php reuses.
 
     /**
      * Whether the current user may see any JumpServer figure at all.
@@ -96,7 +73,7 @@ class PluginIntegrasipamanDashboard extends CommonGLPI
      */
     private static function canViewCards(): bool
     {
-        return Session::haveRight(PluginIntegrasipamanProfile::RIGHT, READ);
+        return Session::haveRight(PluginIntegrasipamanProfile::RIGHT_REPORT, READ);
     }
 
     /**
@@ -592,7 +569,7 @@ CSS;
         $iterator = $DB->request([
             'COUNT' => 'cnt',
             'FROM'  => self::TABLE,
-            'WHERE' => $where,
+            'WHERE' => $where + PluginIntegrasipamanConnection::viewer(),
         ]);
 
         $row = $iterator->current();
@@ -613,7 +590,7 @@ CSS;
         $iterator = $DB->request([
             'SELECT'  => ['event_type', new QueryExpression('COUNT(*) AS ' . $DB->quoteName('cnt'))],
             'FROM'    => self::TABLE,
-            'WHERE'   => $where,
+            'WHERE'   => $where + PluginIntegrasipamanConnection::viewer(),
             'GROUPBY' => 'event_type',
             'ORDER'   => 'cnt DESC',
             'LIMIT'   => self::CHART_GROUP_LIMIT,
@@ -643,7 +620,7 @@ CSS;
         $iterator = $DB->request([
             'SELECT' => ['date_creation', 'event_type', 'username', 'asset_name', 'ip_address', 'status', 'message'],
             'FROM'   => self::TABLE,
-            'WHERE'  => $where,
+            'WHERE'  => $where + PluginIntegrasipamanConnection::viewer(),
             'ORDER'  => 'date_creation DESC',
             'LIMIT'  => $limit,
         ]);

@@ -1,7 +1,7 @@
 # Piece 4 (v1.12.0) — Deployment & Verification Checklist
 
 **Plugin:** integrasipaman — PAM Command Audit Piece 4 (reporting page + CSV export)
-**Target:** glpi-server, /data/www/glpi
+**Target:** GLPI-SERVER, /data/www/glpi
 **Artifact:** glpi/plugins/integrasipamanv1.12.0.zip (tests/ excluded)
 **No schema change** — Piece 4 adds no table, cron, menu, or right. A file copy + php-fpm restart is the whole deploy.
 

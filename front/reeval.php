@@ -21,7 +21,7 @@ Session::checkLoginUser();
 // v2.0.0: gated on the plugin's own right (UPDATE) instead of core `config`
 // UPDATE - see inc/profile.class.php.
 include_once(__DIR__ . '/../inc/profile.class.php');
-Session::checkRight(PluginIntegrasipamanProfile::RIGHT, UPDATE);
+Session::checkRight(PluginIntegrasipamanProfile::RIGHT_CONFIG, UPDATE);
 
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
     Html::displayErrorAndDie(__('This action must be triggered from the "Re-evaluate now" button on the configuration page.', 'integrasipaman'));
@@ -33,10 +33,12 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
 
 Html::header(
     __('Re-evaluate JumpServer commands', 'integrasipaman'),
-    $_SERVER['PHP_SELF'],
-    'config',
-    'plugins'
+    '',
+    \GlpiPlugin\Pgnsuite\Menu::SECTOR,
+    'integrasipaman',
+    'setup'
 );
+\GlpiPlugin\Pgnsuite\Menu::renderSubNav('integrasipaman', 'setup');
 
 try {
     PluginIntegrasipamanCorrelation::resolveAll(10.0);

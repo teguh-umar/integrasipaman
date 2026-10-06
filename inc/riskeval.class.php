@@ -26,26 +26,6 @@ class PluginIntegrasipamanRiskEval extends CommonGLPI
     private const EVAL_TABLE      = 'glpi_plugin_jumpserver_command_eval';
 
     /**
-     * Bumped by hand ONLY when CATEGORY_MAP below changes. It is an input
-     * to rulesHash(), so a deploy that changes the map forces a full
-     * re-evaluation on the next evaluate_commands run.
-     */
-    private const CATEGORY_MAP_VERSION = 1;
-
-    /**
-     * Command-substring -> category. Order is significant (first category
-     * with a match wins); anything unmatched is "General". Verbatim from
-     * jumpserver_monthly_audit.py get_command_category().
-     */
-    private const CATEGORY_MAP = [
-        'Account Management'   => ['passwd', 'useradd', 'userdel', 'usermod', 'groupadd', 'groupdel', 'gpasswd', 'chage'],
-        'Privilege Escalation' => ['sudo', 'su ', 'visudo'],
-        'Service Change'       => ['systemctl', 'service', 'iisreset', 'sc stop', 'sc config'],
-        'Network Security'     => ['iptables', 'firewall-cmd', 'route', 'ip route'],
-        'Destructive'          => ['rm -rf', 'mkfs', 'fdisk', 'parted', 'dd if=', 'format', 'diskpart', 'del /f', 'remove-item'],
-    ];
-
-    /**
      * Split a config textarea into a clean list: one entry per line. Leading
      * whitespace is always stripped; blank lines and "#" comment lines are
      * dropped (tested against a fully trimmed copy). Not lowercased.
@@ -83,6 +63,108 @@ class PluginIntegrasipamanRiskEval extends CommonGLPI
         return $out;
     }
 
+    /**
+     * The bucket for a command no category matched.
+     *
+     * "General" read like a decision somebody had made. It is not: it is
+     * the absence of a rule. Naming it as work makes the list of
+     * uncategorised commands something an operator can finish.
+     */
+    public const UNCATEGORISED = 'Belum Dikategorikan';
+
+    /**
+     * Parse the category textarea into an ordered name => keywords map.
+     * Line order is match order, so the array's insertion order matters.
+     *
+     * Format: one category per line, `Nama: kata1, kata2`.
+     *
+     * Keywords are trimmed the same way parseList() trims a line: leading
+     * whitespace is never meaningful, but one significant trailing space is
+     * preserved when the raw keyword ends with exactly one space after a
+     * non-space character; otherwise it is fully trimmed. `su ` carries
+     * that space in both the seeded keyword list and Privilege Escalation;
+     * trimmed to `su` it matches sudo, sudoers, issue and resume, and the
+     * category silently becomes a catch-all in which every command reads
+     * as a privilege event.
+     *
+     * @return array<string, list<string>>
+     */
+    public static function parseCategories(string $raw): array
+    {
+        $out = [];
+
+        foreach (preg_split('/\r\n|\r|\n/', $raw) as $line) {
+            // Left-trim only here: a right-trim would erase a keyword's
+            // significant trailing space before it ever reaches the keyword
+            // loop below, for any line where that keyword is the last thing
+            // on the line (the common case: one category, one line).
+            $left = ltrim($line);
+            if ($left === '' || $left[0] === '#') {
+                continue;
+            }
+
+            // Split on the FIRST colon only: a keyword may legitimately
+            // contain one of its own - commands do, constantly (C:\ paths,
+            // `scp host:/path`, `rsync host:path`, any URL) - and splitting
+            // on the last colon would chop a keyword in half. A category
+            // NAME does not need a colon; an operator who wants one writes
+            // "Backup - nightly" instead, which costs nothing.
+            //
+            // When $left has no colon, strpos() returns false, and
+            // substr($left, 0, false) coerces that false length to 0,
+            // giving "" - which the empty-name check right below already
+            // drops. A separate "$at === false" guard would be dead code:
+            // there is no input it catches that the empty-name check does
+            // not also catch, since every no-colon line takes this same
+            // path to an empty name.
+            $at = strpos($left, ':');
+
+            $name = trim(substr($left, 0, $at));
+            if ($name === '' || isset($out[$name])) {
+                // A duplicate keeps its first occurrence: two lines competing
+                // would leave the loser looking configured but never matching.
+                continue;
+            }
+
+            $keywords = [];
+            foreach (explode(',', substr($left, $at + 1)) as $raw_kw) {
+                $trimmed = trim($raw_kw);
+                if ($trimmed === '') {
+                    continue;
+                }
+                $kw = preg_match('/\S $/', $raw_kw) ? $trimmed . ' ' : $trimmed;
+                $keywords[] = mb_strtolower($kw);
+            }
+
+            if ($keywords === []) {
+                continue;
+            }
+
+            $out[$name] = $keywords;
+        }
+
+        return $out;
+    }
+
+    /**
+     * First category (in file order) whose keyword appears in the
+     * already-lowercased command, or UNCATEGORISED.
+     *
+     * @param array<string, list<string>> $categories
+     */
+    public static function categoryFor(string $cmd_lower, array $categories): string
+    {
+        foreach ($categories as $name => $keywords) {
+            foreach ($keywords as $kw) {
+                if ($kw !== '' && str_contains($cmd_lower, $kw)) {
+                    return (string) $name;
+                }
+            }
+        }
+
+        return self::UNCATEGORISED;
+    }
+
     /** First IPv4 dotted-quad in the asset string (e.g. "VM(10.0.0.1)"), or ''. */
     public static function extractIp(string $asset): string
     {
@@ -105,33 +187,20 @@ class PluginIntegrasipamanRiskEval extends CommonGLPI
         return '';
     }
 
-    /** Category of an already-lowercased command; "General" if nothing matches. */
-    public static function category(string $cmd_lower): string
-    {
-        foreach (self::CATEGORY_MAP as $name => $keywords) {
-            foreach ($keywords as $kw) {
-                if (str_contains($cmd_lower, $kw)) {
-                    return $name;
-                }
-            }
-        }
-        return 'General';
-    }
-
     /**
-     * @param array<int, string> $prefixes
+     * Address-only classification, used when an asset string has no row in
+     * the correlation map yet.
+     *
+     * Delegates to the resolver so there is ONE tie-breaking rule in the
+     * codebase. Two copies of "production wins" drift, and the drift shows
+     * up as two screens disagreeing about one asset.
+     *
+     * @param array<int,string> $prod_prefixes
+     * @param array<int,string> $dev_prefixes
      */
-    public static function isProduction(string $ip, array $prefixes): bool
+    public static function classFromIp(string $ip, array $prod_prefixes, array $dev_prefixes): string
     {
-        if ($ip === '') {
-            return false;
-        }
-        foreach ($prefixes as $prefix) {
-            if ($prefix !== '' && str_starts_with($ip, str_replace('xx', '', $prefix))) {
-                return true;
-            }
-        }
-        return false;
+        return PluginIntegrasipamanCorrelation::classFor($ip, $prod_prefixes, $dev_prefixes);
     }
 
     public static function isHighRisk(int $risk_level, string $keyword_hit): bool
@@ -140,19 +209,29 @@ class PluginIntegrasipamanRiskEval extends CommonGLPI
     }
 
     /**
+     * @param string $class production | development | '' (unclassified)
      * @return array{0: string, 1: string} [priority, catatan]
      */
-    public static function priorityNote(bool $high_risk, bool $is_prod, bool $is_admin): array
+    public static function priorityNote(bool $high_risk, string $class, bool $is_admin): array
     {
         if (!$high_risk) {
             return ['', ''];
         }
-        if (!$is_prod) {
-            return ['LOW', 'Aset Non-Production'];
+        if ($class === 'development') {
+            return ['LOW', 'Aset Development'];
+        }
+        // Anything that is not one of the two stated classes is unstated -
+        // including a bool coerced to '1' by a call site missed during the
+        // signature change. Defaulting the UNKNOWN case to the visible
+        // branch is deliberate: a coercion bug then shows up as an
+        // unexpected MEDIUM rather than as a silent HIGH or LOW.
+        if ($class !== 'production') {
+            return ['MEDIUM', 'Aset Belum Diklasifikasi'];
         }
         if ($is_admin) {
             return ['MEDIUM', 'Aktivitas Admin'];
         }
+
         return ['HIGH', 'Butuh Tindak Lanjut'];
     }
 
@@ -161,34 +240,36 @@ class PluginIntegrasipamanRiskEval extends CommonGLPI
      * correlation maps. Keywords are lowercased here so matchKeyword()
      * gets a ready list.
      *
-     * @return array{keywords: array<int,string>, admins: array<int,string>, prefixes: array<int,string>, asset_prod: array<string,bool>, user_admin: array<string,bool>}
+     * @return array{keywords: array<int,string>, admins: array<int,string>, prefixes: array<int,string>, dev_prefixes: array<int,string>, asset_class: array<string,string>, user_admin: array<string,bool>}
      */
     public static function loadRules(): array
     {
         $cfg = Config::getConfigurationValues(PluginIntegrasipamanConfig::CONFIG_CONTEXT);
 
         return [
-            'keywords'   => array_map('mb_strtolower', self::parseList((string) ($cfg['jumpserver_risk_keywords'] ?? ''), true)),
-            'admins'     => self::parseList((string) ($cfg['jumpserver_admin_users'] ?? '')),
-            'prefixes'   => self::parseList((string) ($cfg['jumpserver_production_ip_prefixes'] ?? '')),
-            // Piece 3: GLPI-native resolution (asset -> production,
+            'keywords'     => array_map('mb_strtolower', self::parseList((string) ($cfg['jumpserver_risk_keywords'] ?? ''), true)),
+            'admins'       => self::parseList((string) ($cfg['jumpserver_admin_users'] ?? '')),
+            'prefixes'     => self::parseList((string) ($cfg['jumpserver_production_ip_prefixes'] ?? '')),
+            'dev_prefixes' => self::parseList((string) ($cfg['jumpserver_development_ip_prefixes'] ?? '')),
+            'categories'   => self::parseCategories((string) ($cfg['jumpserver_command_categories'] ?? '')),
+            // Piece 3: GLPI-native resolution (asset -> class,
             // user -> admin). evaluateRow() reads these first and falls
             // back to admins/prefixes above only when a string has no map
             // row yet. A read failure (e.g. the map tables not yet created
             // on a deploy where the version was not bumped) degrades to an
             // empty map -> exact Piece 2 behaviour via the fallback lists.
-            'asset_prod' => self::safeCorrelationMap('assetProdMap'),
-            'user_admin' => self::safeCorrelationMap('userAdminMap'),
+            'asset_class'  => self::safeCorrelationMap('assetClassMap'),
+            'user_admin'   => self::safeCorrelationMap('userAdminMap'),
         ];
     }
 
     /**
-     * @return array<string,bool>
+     * @return array<string,bool>|array<string,string>
      */
     private static function safeCorrelationMap(string $method): array
     {
         try {
-            /** @var array<string,bool> $map */
+            /** @var array<string,bool>|array<string,string> $map */
             $map = PluginIntegrasipamanCorrelation::$method();
             return $map;
         } catch (\Throwable $e) {
@@ -203,12 +284,12 @@ class PluginIntegrasipamanRiskEval extends CommonGLPI
     /**
      * 40-char sha1 of every input that can change a classification: the
      * three lists, the Piece 3 correlation-maps generation counter (bumped
-     * only when a resolve actually changes an is_production / is_admin
+     * only when a resolve actually changes an asset_class / is_admin
      * verdict, or an admin override does - so a plain new asset string
-     * does NOT trigger a full re-evaluation), plus CATEGORY_MAP_VERSION.
-     * Rows whose stored rules_hash differs from this are re-evaluated.
+     * does NOT trigger a full re-evaluation), plus the parsed category
+     * list. Rows whose stored rules_hash differs from this are re-evaluated.
      *
-     * @param array{keywords: array, admins: array, prefixes: array} $rules
+     * @param array{keywords: array, admins: array, prefixes: array, dev_prefixes: array, categories: array<string, list<string>>} $rules
      */
     public static function rulesHash(array $rules): string
     {
@@ -220,12 +301,27 @@ class PluginIntegrasipamanRiskEval extends CommonGLPI
             // evaluateRow() keeps classification correct regardless.
         }
 
+        // The PARSED list, never the raw textarea. Hashing the raw value
+        // would make tidying whitespace or adding a comment re-evaluate
+        // every row in the history - a full sweep with no cause. json_encode
+        // (not hand-joined "$name=$kw,$kw") because a name or keyword may
+        // itself contain '=' or ',' - the seed ships "dd if=" - and an
+        // unescaped join lets two different configurations serialise to the
+        // same string, which would silently stop hashing a real rule change.
+        // JSON_INVALID_UTF8_SUBSTITUTE because a bare json_encode() RETURNS
+        // FALSE on invalid UTF-8, which concatenates as '' - two different
+        // broken configurations would then hash identically, the sweep would
+        // never run, and the report would keep showing categories the config
+        // no longer holds. The flag leaves every valid config's hash unchanged.
+        $categories = json_encode($rules['categories'] ?? [], JSON_INVALID_UTF8_SUBSTITUTE);
+
         return sha1(
             implode("\n", $rules['keywords']) . "\0"
           . implode("\n", $rules['admins'])   . "\0"
-          . implode("\n", $rules['prefixes']) . "\0"
+          . implode("\n", $rules['prefixes'])     . "\0"
+          . implode("\n", $rules['dev_prefixes'] ?? []) . "\0"
           . 'gen' . $generation . "\0"
-          . self::CATEGORY_MAP_VERSION
+          . $categories
         );
     }
 
@@ -233,7 +329,7 @@ class PluginIntegrasipamanRiskEval extends CommonGLPI
      * Full eval-table column set for one command row.
      *
      * @param array{id: int|string, risk_level: int|string, command: ?string, asset: ?string, jms_user: ?string}          $cmd
-     * @param array{keywords: array, admins: array, prefixes: array, asset_prod: array<string,bool>, user_admin: array<string,bool>} $rules
+     * @param array{keywords: array, admins: array, prefixes: array, dev_prefixes: array, categories: array<string, list<string>>, asset_class: array<string,string>, user_admin: array<string,bool>} $rules
      * @return array<string, mixed>
      */
     public static function evaluateRow(array $cmd, array $rules, string $hash): array
@@ -244,25 +340,25 @@ class PluginIntegrasipamanRiskEval extends CommonGLPI
         $high_risk   = self::isHighRisk($risk_level, $keyword_hit);
 
         $ip       = self::extractIp((string) ($cmd['asset'] ?? ''));
-        // Piece 3: the correlation map wins; the flat lists are the
-        // fallback only for a string with no map row yet. `??` falls
-        // through on absent/null only, so a map row resolved to false
-        // correctly yields non-production without consulting the prefix
-        // list (assetProdMap() returns every row, not just the true ones).
-        $is_prod  = $rules['asset_prod'][(string) ($cmd['asset'] ?? '')]
-                    ?? self::isProduction($ip, $rules['prefixes']);
+        // The correlation map wins; the prefix lists are the fallback only
+        // for an asset string with no map row yet. `??` falls through on
+        // absent/null ONLY - so a row explicitly resolved to '' stays
+        // unclassified instead of being re-derived from the very lists that
+        // produced the '' in the first place.
+        $class    = $rules['asset_class'][(string) ($cmd['asset'] ?? '')]
+                    ?? self::classFromIp($ip, $rules['prefixes'], $rules['dev_prefixes'] ?? []);
         $is_admin = $rules['user_admin'][(string) ($cmd['jms_user'] ?? '')]
                     ?? in_array((string) ($cmd['jms_user'] ?? ''), $rules['admins'], true);
 
-        [$priority, $catatan] = self::priorityNote($high_risk, $is_prod, $is_admin);
+        [$priority, $catatan] = self::priorityNote($high_risk, $class, $is_admin);
 
         return [
             'commands_id'         => (int) ($cmd['id'] ?? 0),
             'is_high_risk'        => $high_risk ? 1 : 0,
             'keyword_hit'         => mb_substr($keyword_hit, 0, 64),
-            'risk_category'       => mb_substr(self::category($cmd_lower), 0, 32),
+            'risk_category'       => mb_substr(self::categoryFor($cmd_lower, $rules['categories'] ?? []), 0, 32),
             'asset_ip'            => mb_substr($ip, 0, 45),
-            'asset_is_production' => $is_prod ? 1 : 0,
+            'asset_class'         => mb_substr($class, 0, 20),
             'user_is_admin'       => $is_admin ? 1 : 0,
             'priority'            => $priority,
             'catatan'             => $catatan,
@@ -286,12 +382,48 @@ class PluginIntegrasipamanRiskEval extends CommonGLPI
      */
     public static function evaluateStale(int $chunk = 5000, float $max_seconds = 120.0): array
     {
+        $deadline = microtime(true) + $max_seconds;
+
+        // v4.0.0: one pass per connection. The verdict of a command depends
+        // on the asset map and the user map, and those belong to the
+        // connection the command came through: the same asset string on two
+        // JumpServers is two different machines. The time budget is shared.
+        if (PluginIntegrasipamanConnection::all() === []) {
+            return self::evaluateCurrent($chunk, $deadline);
+        }
+
+        $total = ['evaluated' => 0, 'stale_remaining' => 0];
+        $runs  = PluginIntegrasipamanConnection::each(static fn () => self::evaluateCurrent($chunk, $deadline));
+        foreach ($runs as $run) {
+            if ($run['error'] !== '') {
+                trigger_error(
+                    sprintf('command_eval: connection "%s" failed: %s', $run['connection']->label(), $run['error']),
+                    E_USER_WARNING
+                );
+                continue;
+            }
+            $total['evaluated']       += $run['result']['evaluated'];
+            $total['stale_remaining'] += $run['result']['stale_remaining'];
+        }
+
+        return $total;
+    }
+
+    /**
+     * evaluateStale() for the current connection's commands - or, on an
+     * instance with no connection at all, for every command.
+     *
+     * @return array{evaluated: int, stale_remaining: int}
+     */
+    private static function evaluateCurrent(int $chunk, float $deadline): array
+    {
         global $DB;
 
+        // loadRules() reads the two maps of the CURRENT connection.
         $rules = self::loadRules();
         $hash  = self::rulesHash($rules);
         $evaluated = 0;
-        $deadline  = microtime(true) + $max_seconds;
+        $mine      = PluginIntegrasipamanConnection::ownRows('c');
 
         do {
             // CONTINGENCY: if this GLPI query-builder LEFT JOIN + OR/NOT/null
@@ -312,7 +444,7 @@ class PluginIntegrasipamanRiskEval extends CommonGLPI
                         ['e.id' => null],
                         ['NOT'  => ['e.rules_hash' => $hash]],
                     ],
-                ],
+                ] + $mine,
                 'LIMIT'      => $chunk,
             ]);
 
@@ -353,7 +485,7 @@ class PluginIntegrasipamanRiskEval extends CommonGLPI
             'LEFT JOIN' => [
                 self::EVAL_TABLE . ' AS e' => ['ON' => ['e' => 'commands_id', 'c' => 'id']],
             ],
-            'WHERE'     => ['OR' => [['e.id' => null], ['NOT' => ['e.rules_hash' => $hash]]]],
+            'WHERE'     => ['OR' => [['e.id' => null], ['NOT' => ['e.rules_hash' => $hash]]]] + $mine,
         ])->current()['c'] ?? 0;
 
         return ['evaluated' => $evaluated, 'stale_remaining' => (int) $stale_remaining];

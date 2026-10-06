@@ -19,13 +19,26 @@ include('../../../inc/includes.php');
 // READ opens the page; saving needs UPDATE (checked on the POST branch).
 Session::checkLoginUser();
 include_once(__DIR__ . '/../inc/profile.class.php');
-Session::checkRight(PluginIntegrasipamanProfile::RIGHT, READ);
+Session::checkRight(PluginIntegrasipamanProfile::RIGHT_CONFIG, READ);
 
 include_once(__DIR__ . '/../inc/config.class.php');
 include_once(__DIR__ . '/../inc/correlation.class.php');
 
+// v4.0.0: choose which connection the Setup form edits. Only a choice is
+// stored; editedConnection() ignores an id that is not the viewer's.
+if (isset($_GET['select_connection'])) {
+    $_SESSION[PluginIntegrasipamanConfig::SESSION_CONNECTION] = $_GET['select_connection'] === 'new'
+        ? 'new'
+        : (int) $_GET['select_connection'];
+
+    if (!empty($_GET['_from_pgnsuite'])) {
+        Html::redirect(\GlpiPlugin\Pgnsuite\ConfigTab::getReturnUrl('integrasipaman'));
+    }
+    Html::redirect(Plugin::getWebDir('integrasipaman') . '/front/config.form.php');
+}
+
 if (isset($_POST['update'])) {
-    Session::checkRight(PluginIntegrasipamanProfile::RIGHT, UPDATE);
+    Session::checkRight(PluginIntegrasipamanProfile::RIGHT_CONFIG, UPDATE);
 
     // No manual Session::checkCSRF() here: GLPI's Kernel-level
     // CheckCsrfListener already validates the token for every non-GET
@@ -50,11 +63,22 @@ if (isset($_POST['update'])) {
     $jumpserver_command_storage_id        = trim($_POST['jumpserver_command_storage_id'] ?? '');
     $jumpserver_terminal_retention_months = (string) PluginIntegrasipamanConfig::clampMonths($_POST['jumpserver_terminal_retention_months'] ?? '13');
     $jumpserver_terminal_backfill_months  = (string) PluginIntegrasipamanConfig::clampMonths($_POST['jumpserver_terminal_backfill_months'] ?? '13');
-    $jumpserver_risk_keywords          = trim($_POST['jumpserver_risk_keywords'] ?? '');
+    // NOT a bare trim(): this list's seed ships `su ` WITH its trailing
+    // space, and loadRules() reads it with parseList(..., true) precisely to
+    // keep it. A bare trim eats that space whenever `su ` happens to be the
+    // last line - it is only the 9th of ~40 today - and `su` then matches
+    // sudo, sudoers, issue and resume, escalating all four to high risk.
+    // Same trap, same fix, as jumpserver_command_categories below.
+    $jumpserver_risk_keywords          = trim($_POST['jumpserver_risk_keywords'] ?? '', "\r\n");
     $jumpserver_admin_users            = trim($_POST['jumpserver_admin_users'] ?? '');
     $jumpserver_production_ip_prefixes = trim($_POST['jumpserver_production_ip_prefixes'] ?? '');
+    $jumpserver_development_ip_prefixes = trim($_POST['jumpserver_development_ip_prefixes'] ?? '');
+    // NOT trim(): a bare trim eats the significant trailing space on the
+    // last line, so a category ending "..., su " silently becomes "su" and
+    // matches sudo, sudoers, issue and resume.
+    $jumpserver_command_categories = trim($_POST['jumpserver_command_categories'] ?? '', "\r\n");
 
-    $correlation_match_mode = in_array(($_POST['correlation_match_mode'] ?? ''), ['ip_only', 'name_only', 'hybrid'], true)
+    $correlation_match_mode = in_array(($_POST['correlation_match_mode'] ?? ''), PluginIntegrasipamanConfig::MATCH_MODES, true)
         ? $_POST['correlation_match_mode']
         : 'ip_only';
     $correlation_production_ipnetworks = implode(',', array_values(array_unique(array_filter(
@@ -70,6 +94,29 @@ if (isset($_POST['update'])) {
         static fn ($n) => $n > 0
     ))));
 
+    $provisioning_eligible_types = implode(',', array_values(array_unique(array_filter(
+        array_map('intval', (array) ($_POST['provisioning_eligible_types'] ?? [])),
+        static fn ($n) => $n > 0
+    ))));
+    $provisioning_eligible_states = implode(',', array_values(array_unique(array_filter(
+        array_map('intval', (array) ($_POST['provisioning_eligible_states'] ?? [])),
+        static fn ($n) => $n > 0
+    ))));
+    $provisioning_dispose_states = implode(',', array_values(array_unique(array_filter(
+        array_map('intval', (array) ($_POST['provisioning_dispose_states'] ?? [])),
+        static fn ($n) => $n > 0
+    ))));
+    $provisioning_eligible_entities = implode(',', array_values(array_unique(array_filter(
+        array_map('intval', (array) ($_POST['provisioning_eligible_entities'] ?? [])),
+        // Entity 0 is the root entity and is a legitimate choice; keep >= 0.
+        static fn ($n) => $n >= 0
+    ))));
+    $provisioning_ip_prefixes     = trim($_POST['provisioning_ip_prefixes'] ?? '');
+    $provisioning_ticket_statuses = implode(',', array_values(array_unique(array_filter(
+        array_map('intval', (array) ($_POST['provisioning_ticket_statuses'] ?? [])),
+        static fn ($n) => $n > 0
+    ))));
+
     if ($jumpserver_url !== '' && filter_var($jumpserver_url, FILTER_VALIDATE_URL) === false) {
         Session::addMessageAfterRedirect(
             __('JumpServer URL / IP is not a valid URL.'),
@@ -79,7 +126,78 @@ if (isset($_POST['update'])) {
         Html::back();
     }
 
-    if ($jumpserver_access_key_id === '' || $jumpserver_access_key_secret === '' || $jumpserver_org_id === '') {
+    // v3.10.1: the secret fields are rendered empty, so blank means "keep the
+    // stored value". The Access Key Secret is only missing when nothing is
+    // stored either.
+    //
+    // v4.0.0: which connection this POST is for comes from the form, never
+    // from "the" connection. An id must be one of the connections owned by
+    // an entity the admin is working in; 'new' creates one. A form rendered
+    // before this release carries no id and edits what it showed: the
+    // connection editedConnection() resolves.
+    $posted_connection = $_POST['connection_id'] ?? null;
+    if ($posted_connection === null) {
+        [, $connection] = PluginIntegrasipamanConfig::editedConnection();
+    } elseif ($posted_connection === 'new') {
+        $connection = null;
+    } else {
+        $connection = PluginIntegrasipamanConnection::visible(true)[(int) $posted_connection] ?? null;
+        if ($connection === null) {
+            Session::addMessageAfterRedirect(
+                __('That connection does not exist, or belongs to an entity you are not working in.', 'integrasipaman'),
+                false,
+                ERROR
+            );
+            Html::back();
+        }
+    }
+    $secret_missing = $jumpserver_access_key_secret === ''
+        && ($connection === null || !$connection->hasSecret('access_key_secret'));
+
+    // v3.11.0: the owning entity. Absent means the form was rendered before
+    // this release, and absent is "keep", not "root". An entity id from the
+    // request is never trusted (suite entity rule, point 6).
+    $connection_entity    = null;
+    $connection_recursive = null;
+    if (array_key_exists('connection_entities_id', $_POST)) {
+        $connection_entity = (int) $_POST['connection_entities_id'];
+        if ($connection_entity < 0 || !Session::haveAccessToEntity($connection_entity)) {
+            Session::addMessageAfterRedirect(
+                __('You do not have access to the selected entity.', 'integrasipaman'),
+                false,
+                ERROR
+            );
+            Html::back();
+        }
+    }
+    if (array_key_exists('connection_is_recursive', $_POST)) {
+        $connection_recursive = !empty($_POST['connection_is_recursive']);
+    }
+
+    // Additional entities: only when the field was on the form, and every
+    // one of them an entity the admin has access to.
+    $connection_extra = null;
+    if (!empty($_POST['connection_extra_entities_shown'])) {
+        $connection_extra = array_values(array_unique(array_filter(
+            array_map('intval', (array) ($_POST['connection_extra_entities'] ?? [])),
+            static fn ($n) => $n >= 0
+        )));
+        foreach ($connection_extra as $extra_entity) {
+            if (!Session::haveAccessToEntity($extra_entity)) {
+                Session::addMessageAfterRedirect(
+                    __('You do not have access to one of the additional entities.', 'integrasipaman'),
+                    false,
+                    ERROR
+                );
+                Html::back();
+            }
+        }
+    }
+    $connection_active = array_key_exists('connection_is_active', $_POST)
+        ? !empty($_POST['connection_is_active'])
+        : null;
+
+    if ($jumpserver_access_key_id === '' || $secret_missing || $jumpserver_org_id === '') {
         Session::addMessageAfterRedirect(
             __('Access Key ID, Access Key Secret and Organization ID are all required.', 'integrasipaman'),
             false,
@@ -88,27 +206,102 @@ if (isset($_POST['update'])) {
         Html::back();
     }
 
-    Config::setConfigurationValues(PluginIntegrasipamanConfig::CONFIG_CONTEXT, [
-        'jumpserver_url'               => $jumpserver_url,
-        'jumpserver_access_key_id'     => $jumpserver_access_key_id,
-        'jumpserver_access_key_secret' => $jumpserver_access_key_secret,
-        'jumpserver_org_id'            => $jumpserver_org_id,
-        'jumpserver_pbi_db_host'       => $jumpserver_pbi_db_host,
-        'jumpserver_pbi_db_port'       => $jumpserver_pbi_db_port,
-        'jumpserver_pbi_db_name'       => $jumpserver_pbi_db_name,
-        'jumpserver_pbi_db_user'       => $jumpserver_pbi_db_user,
-        'jumpserver_pbi_db_password'   => $jumpserver_pbi_db_password,
-        'jumpserver_command_storage_id'        => $jumpserver_command_storage_id,
+    // v3.11.0: the connection is a row of its own, not config. The form keeps
+    // its field names; LEGACY_KEYS maps them to the columns.
+    $connection_values = [];
+    foreach ([
+        'jumpserver_url'                => $jumpserver_url,
+        'jumpserver_access_key_id'      => $jumpserver_access_key_id,
+        'jumpserver_org_id'             => $jumpserver_org_id,
+        'jumpserver_command_storage_id' => $jumpserver_command_storage_id,
+        'jumpserver_pbi_db_host'        => $jumpserver_pbi_db_host,
+        'jumpserver_pbi_db_port'        => $jumpserver_pbi_db_port,
+        'jumpserver_pbi_db_name'        => $jumpserver_pbi_db_name,
+        'jumpserver_pbi_db_user'        => $jumpserver_pbi_db_user,
+    ] as $field => $value) {
+        $connection_values[PluginIntegrasipamanConnection::LEGACY_KEYS[$field]] = $value;
+    }
+    if (array_key_exists('connection_name', $_POST)) {
+        $connection_values['name'] = mb_substr(trim((string) $_POST['connection_name']), 0, 191);
+    }
+
+    $config_values = [
         'jumpserver_terminal_retention_months' => $jumpserver_terminal_retention_months,
         'jumpserver_terminal_backfill_months'  => $jumpserver_terminal_backfill_months,
         'jumpserver_risk_keywords'          => $jumpserver_risk_keywords,
         'jumpserver_admin_users'            => $jumpserver_admin_users,
         'jumpserver_production_ip_prefixes' => $jumpserver_production_ip_prefixes,
+        'jumpserver_development_ip_prefixes' => $jumpserver_development_ip_prefixes,
+        'jumpserver_command_categories'     => $jumpserver_command_categories,
         'correlation_match_mode'            => $correlation_match_mode,
         'correlation_production_ipnetworks' => $correlation_production_ipnetworks,
         'correlation_production_addressings' => $correlation_production_addressings,
         'correlation_admin_groups'          => $correlation_admin_groups,
-    ]);
+        'provisioning_eligible_types'    => $provisioning_eligible_types,
+        'provisioning_eligible_states'   => $provisioning_eligible_states,
+        'provisioning_dispose_states'    => $provisioning_dispose_states,
+        'provisioning_eligible_entities' => $provisioning_eligible_entities,
+        'provisioning_ip_prefixes'       => $provisioning_ip_prefixes,
+        'provisioning_ticket_statuses'   => $provisioning_ticket_statuses,
+    ];
+
+    // A Setup page rendered before this release has no categories field, so a
+    // POST from such a tab would save '' over the seeded list and the next
+    // cron would sweep the whole history into Belum Dikategorikan. Absent and
+    // empty are different: absent means "this form does not know about the
+    // key", empty means "the operator cleared it", and only the second is an
+    // instruction.
+    //
+    // Deliberately NOT a fallback to CONFIG_DEFAULTS when the value is empty:
+    // an operator who clears every category must get everything in Belum
+    // Dikategorikan, and a fallback on empty makes zero categories
+    // unreachable.
+    if (!array_key_exists('jumpserver_command_categories', $_POST)) {
+        unset($config_values['jumpserver_command_categories']);
+    }
+
+    Config::setConfigurationValues(PluginIntegrasipamanConfig::CONFIG_CONTEXT, $config_values);
+
+    // The connection row, the two secrets with it. Only a secret that was
+    // typed is written; the class encrypts it. Nothing here goes through
+    // Config, so nothing reaches the history of Setup > General.
+    $secrets = [];
+    if ($jumpserver_access_key_secret !== '') {
+        $secrets['access_key_secret'] = $jumpserver_access_key_secret;
+    }
+    if (!empty($_POST['_clear_jumpserver_pbi_db_password'])) {
+        $secrets['pbi_db_password'] = '';
+    } elseif ($jumpserver_pbi_db_password !== '') {
+        $secrets['pbi_db_password'] = $jumpserver_pbi_db_password;
+    }
+    $connection_error = PluginIntegrasipamanConnection::save(
+        $connection?->id(),
+        $connection_values,
+        $secrets,
+        $connection_entity,
+        $connection_recursive,
+        $connection_extra,
+        $connection_active
+    );
+    if ($connection_error !== '') {
+        Session::addMessageAfterRedirect(
+            sprintf(__('The connection could not be saved (%s). The other settings were saved.', 'integrasipaman'), $connection_error),
+            false,
+            ERROR
+        );
+        Html::back();
+    }
+    // The label on every screen is the first part of the URL just saved.
+    PluginIntegrasipamanServerLabel::reset();
+
+    // Stay on the connection just saved - for a new one, the row its entity
+    // now owns.
+    $saved_entity = $connection_entity ?? $connection?->entity();
+    foreach (PluginIntegrasipamanConnection::every() as $saved) {
+        if ($saved->entity() === $saved_entity) {
+            $_SESSION[PluginIntegrasipamanConfig::SESSION_CONNECTION] = $saved->id();
+        }
+    }
 
     Session::addMessageAfterRedirect(__('Configuration successfully updated.'));
 
@@ -139,10 +332,12 @@ if (isset($_POST['update'])) {
 
     Html::header(
         PluginIntegrasipamanConfig::getTypeName(),
-        $_SERVER['PHP_SELF'],
-        'config',
-        'plugins'
+        '',
+        \GlpiPlugin\Pgnsuite\Menu::SECTOR,
+        'integrasipaman',
+        'setup'
     );
+    \GlpiPlugin\Pgnsuite\Menu::renderSubNav('integrasipaman', 'setup');
 
     $config = new PluginIntegrasipamanConfig();
     $config->showFormConfig();

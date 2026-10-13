@@ -20,6 +20,10 @@ class Config {
         ];
     }
 }
+// loadRules() reads the rules of the current connection (4.4.0). This suite has
+// no connection table, so the lookup finds none and the instance defaults apply.
+class FakeDB { public function tableExists($t) { return false; } }
+$DB = new FakeDB();
 // Correlation stub: one asset known development, one user known admin.
 // assetClassMap() records which method name it was called under, so a
 // regression back to the old assetProdMap() call site is pinned by name,

@@ -27,8 +27,10 @@ include_once(__DIR__ . '/../inc/correlation.class.php');
 // v4.0.0: choose which connection the Setup form edits. Only a choice is
 // stored; editedConnection() ignores an id that is not the viewer's.
 if (isset($_GET['select_connection'])) {
-    $_SESSION[PluginIntegrasipamanConfig::SESSION_CONNECTION] = $_GET['select_connection'] === 'new'
-        ? 'new'
+    // 'defaults' is the form for what every connection inherits (4.4.0);
+    // editingDefaults() checks the viewer's access when it is used.
+    $_SESSION[PluginIntegrasipamanConfig::SESSION_CONNECTION] = in_array($_GET['select_connection'], ['new', 'defaults'], true)
+        ? $_GET['select_connection']
         : (int) $_GET['select_connection'];
 
     if (!empty($_GET['_from_pgnsuite'])) {
@@ -123,6 +125,74 @@ if (isset($_POST['update'])) {
             false,
             ERROR
         );
+        Html::back();
+    }
+
+    // The settings the form holds that are not about a JumpServer. The rule
+    // lists are per connection (4.4.0): the connection keeps its own, or
+    // follows the one above it, or the defaults below.
+    $config_values = [
+        'jumpserver_terminal_retention_months' => $jumpserver_terminal_retention_months,
+        'jumpserver_terminal_backfill_months'  => $jumpserver_terminal_backfill_months,
+    ];
+    $rule_values = [
+        'jumpserver_risk_keywords'          => $jumpserver_risk_keywords,
+        'jumpserver_admin_users'            => $jumpserver_admin_users,
+        'jumpserver_production_ip_prefixes' => $jumpserver_production_ip_prefixes,
+        'jumpserver_development_ip_prefixes' => $jumpserver_development_ip_prefixes,
+        'jumpserver_command_categories'     => $jumpserver_command_categories,
+        'correlation_match_mode'            => $correlation_match_mode,
+        'correlation_production_ipnetworks' => $correlation_production_ipnetworks,
+        'correlation_production_addressings' => $correlation_production_addressings,
+        'correlation_admin_groups'          => $correlation_admin_groups,
+        'provisioning_eligible_types'    => $provisioning_eligible_types,
+        'provisioning_eligible_states'   => $provisioning_eligible_states,
+        'provisioning_dispose_states'    => $provisioning_dispose_states,
+        'provisioning_eligible_entities' => $provisioning_eligible_entities,
+        'provisioning_ip_prefixes'       => $provisioning_ip_prefixes,
+        'provisioning_ticket_statuses'   => $provisioning_ticket_statuses,
+    ];
+
+    // A Setup page rendered before this release has no categories field, so a
+    // POST from such a tab would save '' over the seeded list and the next
+    // cron would sweep the whole history into Belum Dikategorikan. Absent and
+    // empty are different: absent means "this form does not know about the
+    // key", empty means "the operator cleared it", and only the second is an
+    // instruction.
+    //
+    // Deliberately NOT a fallback to CONFIG_DEFAULTS when the value is empty:
+    // an operator who clears every category must get everything in Belum
+    // Dikategorikan, and a fallback on empty makes zero categories
+    // unreachable.
+    if (!array_key_exists('jumpserver_command_categories', $_POST)) {
+        unset($rule_values['jumpserver_command_categories']);
+    }
+
+    // v4.4.0: the form for the defaults every connection inherits. There is no
+    // connection in it: only the instance-wide settings are written, and only
+    // by someone who may change them for everyone.
+    if (($_POST['connection_id'] ?? null) === 'defaults') {
+        if (!PluginIntegrasipamanConfig::canEditDefaults()) {
+            Session::addMessageAfterRedirect(
+                __('Changing the defaults for all connections needs access to the root entity.', 'integrasipaman'),
+                false,
+                ERROR
+            );
+            Html::back();
+        }
+
+        Config::setConfigurationValues(PluginIntegrasipamanConfig::CONFIG_CONTEXT, $config_values + $rule_values);
+        Session::addMessageAfterRedirect(__('Configuration successfully updated.'));
+
+        // Every connection that follows the defaults has new rules.
+        try {
+            PluginIntegrasipamanCorrelation::resolveAll(10.0);
+        } catch (\Throwable $e) {
+            trigger_error('config: post-save correlation resolve failed: ' . $e->getMessage(), E_USER_WARNING);
+        }
+        if (!empty($_POST['_from_pgnsuite'])) {
+            Html::redirect(\GlpiPlugin\Pgnsuite\ConfigTab::getReturnUrl('integrasipaman'));
+        }
         Html::back();
     }
 
@@ -238,41 +308,8 @@ if (isset($_POST['update'])) {
         $connection_values['name'] = mb_substr(trim((string) $_POST['connection_name']), 0, 191);
     }
 
-    $config_values = [
-        'jumpserver_terminal_retention_months' => $jumpserver_terminal_retention_months,
-        'jumpserver_terminal_backfill_months'  => $jumpserver_terminal_backfill_months,
-        'jumpserver_risk_keywords'          => $jumpserver_risk_keywords,
-        'jumpserver_admin_users'            => $jumpserver_admin_users,
-        'jumpserver_production_ip_prefixes' => $jumpserver_production_ip_prefixes,
-        'jumpserver_development_ip_prefixes' => $jumpserver_development_ip_prefixes,
-        'jumpserver_command_categories'     => $jumpserver_command_categories,
-        'correlation_match_mode'            => $correlation_match_mode,
-        'correlation_production_ipnetworks' => $correlation_production_ipnetworks,
-        'correlation_production_addressings' => $correlation_production_addressings,
-        'correlation_admin_groups'          => $correlation_admin_groups,
-        'provisioning_eligible_types'    => $provisioning_eligible_types,
-        'provisioning_eligible_states'   => $provisioning_eligible_states,
-        'provisioning_dispose_states'    => $provisioning_dispose_states,
-        'provisioning_eligible_entities' => $provisioning_eligible_entities,
-        'provisioning_ip_prefixes'       => $provisioning_ip_prefixes,
-        'provisioning_ticket_statuses'   => $provisioning_ticket_statuses,
-    ];
-
-    // A Setup page rendered before this release has no categories field, so a
-    // POST from such a tab would save '' over the seeded list and the next
-    // cron would sweep the whole history into Belum Dikategorikan. Absent and
-    // empty are different: absent means "this form does not know about the
-    // key", empty means "the operator cleared it", and only the second is an
-    // instruction.
-    //
-    // Deliberately NOT a fallback to CONFIG_DEFAULTS when the value is empty:
-    // an operator who clears every category must get everything in Belum
-    // Dikategorikan, and a fallback on empty makes zero categories
-    // unreachable.
-    if (!array_key_exists('jumpserver_command_categories', $_POST)) {
-        unset($config_values['jumpserver_command_categories']);
-    }
-
+    // Only the instance-wide settings go to glpi_configs here. The rule lists
+    // are the connection's (4.4.0): written to it below, once it exists.
     Config::setConfigurationValues(PluginIntegrasipamanConfig::CONFIG_CONTEXT, $config_values);
 
     // The connection row, the two secrets with it. Only a secret that was
@@ -313,6 +350,31 @@ if (isset($_POST['update'])) {
     foreach (PluginIntegrasipamanConnection::every() as $saved) {
         if ($saved->entity() === $saved_entity) {
             $_SESSION[PluginIntegrasipamanConfig::SESSION_CONNECTION] = $saved->id();
+        }
+    }
+
+    // v4.4.0: the rules this connection keeps for itself. A group whose switch
+    // is on takes the values posted for it; a group whose switch is off is
+    // released, so the connection follows the one above it again. Only when the
+    // form carried the switches: a page rendered before this release did not,
+    // and would otherwise release every group. A connection that has just been
+    // created follows the defaults until it is edited.
+    if ($connection !== null && !empty($_POST['rule_own_shown'])) {
+        $own_sections = array_values(array_intersect(
+            array_keys(array_filter((array) ($_POST['rule_own'] ?? []))),
+            array_keys(PluginIntegrasipamanRuleSettings::SECTIONS)
+        ));
+        $rule_error = PluginIntegrasipamanConnection::saveRules(
+            $connection->id(),
+            PluginIntegrasipamanRuleSettings::mapToStore($rule_values, $own_sections)
+        );
+        if ($rule_error !== '') {
+            Session::addMessageAfterRedirect(
+                sprintf(__('The rules of the connection could not be saved (%s).', 'integrasipaman'), $rule_error),
+                false,
+                ERROR
+            );
+            Html::back();
         }
     }
 

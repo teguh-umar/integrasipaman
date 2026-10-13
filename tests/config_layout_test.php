@@ -28,6 +28,9 @@ check(strlen($body) > 2000, 'showFormConfig() was located, so the checks below a
 // Two lists since v3.11.0: the settings that go to glpi_configs, and the
 // connection fields that go to the connection row. Both must be on the form.
 preg_match('/\$config_values\s*=\s*\[(.*?)\];/s', $form_src, $m);
+// 4.4.0: the rule lists left $config_values for $rule_values (they are per connection).
+preg_match('/\$rule_values\s*=\s*\[(.*?)\];/s', $form_src, $rm);
+$m[1] = ($m[1] ?? '') . ($rm[1] ?? '');
 preg_match('/foreach \(\[(.*?)\] as \$field => \$value\)/s', $form_src, $cm);
 check(isset($cm[1]), 'the connection field list in the save controller was located');
 preg_match_all("/'([a-z_]+)'\s*=>/", ($m[1] ?? '') . ($cm[1] ?? ''), $km);

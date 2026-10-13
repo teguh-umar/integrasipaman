@@ -19,6 +19,7 @@ if (!defined('GLPI_ROOT')) {
 }
 
 require_once __DIR__ . '/config.class.php';
+require_once __DIR__ . '/rulesettings.class.php';
 
 class PluginIntegrasipamanRiskEval extends CommonGLPI
 {
@@ -244,7 +245,9 @@ class PluginIntegrasipamanRiskEval extends CommonGLPI
      */
     public static function loadRules(): array
     {
-        $cfg = Config::getConfigurationValues(PluginIntegrasipamanConfig::CONFIG_CONTEXT);
+        // v4.4.0: the rules of the CURRENT connection - its own, or inherited,
+        // or the instance defaults. Never the instance set directly.
+        $cfg = PluginIntegrasipamanRuleSettings::current();
 
         return [
             'keywords'     => array_map('mb_strtolower', self::parseList((string) ($cfg['jumpserver_risk_keywords'] ?? ''), true)),

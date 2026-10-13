@@ -754,8 +754,8 @@ check(str_contains($config, '[$connection_is_new, $connection] = self::editedCon
       'the Setup form edits a chosen connection, never simply "the" connection');
 check(preg_match('/function editedConnection\(\): array\s*\{\s*\$visible = PluginIntegrasipamanConnection::visible\(true\);/', $config) === 1,
       'chosen among the connections owned by an entity the admin is working in, switched-off ones included');
-check(str_contains($config, "Html::hidden('connection_id', ['value' => \$connection_is_new ? 'new' : (string) \$connection->id()])"),
-      'the form says which connection it is for');
+check(str_contains($config, "Html::hidden('connection_id', [") && str_contains($config, '(string) $connection->id()') && str_contains($config, "'defaults' : ("),
+      'the form says which connection it is for: an id, new, or the defaults');
 check(str_contains($config, "'connection_extra_entities'") && str_contains($config, "Html::hidden('connection_extra_entities_shown'")
       && str_contains($config, "Dropdown::showYesNo('connection_is_active'") && str_contains($config, "Html::input('connection_name'"),
       'and has the name, the additional entities (with a marker, since an emptied multi-select posts nothing) and the on/off switch');

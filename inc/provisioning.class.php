@@ -22,6 +22,7 @@ if (!defined('GLPI_ROOT')) {
 }
 
 require_once __DIR__ . '/serverlabel.class.php';
+require_once __DIR__ . '/rulesettings.class.php';
 
 class PluginIntegrasipamanProvisioning extends CommonDBTM
 {
@@ -381,9 +382,12 @@ class PluginIntegrasipamanProvisioning extends CommonDBTM
      *
      * @return array{types:list<int>, states:list<int>, dispose_states:list<int>, entities:list<int>, ip_prefixes:list<string>, ticket_statuses:list<int>}
      */
-    public static function criteriaFromConfig(): array
+    public static function criteriaFromConfig(?PluginIntegrasipamanConnection $connection = null): array
     {
-        $config = Config::getConfigurationValues(PluginIntegrasipamanConfig::CONFIG_CONTEXT);
+        // v4.4.0: the settings of a connection - its own, inherited, or the
+        // instance defaults. With none given, the one the running code works
+        // on (refreshOne() runs as the connection that serves the Computer).
+        $config = PluginIntegrasipamanRuleSettings::forConnection($connection ?? PluginIntegrasipamanConnection::current());
 
         $ids = static fn (string $key): array => array_values(array_filter(
             array_map('intval', explode(',', (string) ($config[$key] ?? ''))),
@@ -629,7 +633,9 @@ class PluginIntegrasipamanProvisioning extends CommonDBTM
     {
         global $DB;
 
-        $criteria = self::criteriaFromConfig();
+        // v4.4.0: the criteria belong to a connection too, so they are read
+        // once per connection below, not once for the sweep.
+        $criteria_for = [];
 
         // v4.0.0: the two mapping lookups belong to a connection, so they
         // can no longer be read once for the whole sweep. They are read once
@@ -666,7 +672,10 @@ class PluginIntegrasipamanProvisioning extends CommonDBTM
             $serving = PluginIntegrasipamanConnection::forEntity((int) ($computer_row['entities_id'] ?? 0));
             [$node_lookup, $platform_lookup] = $lookups[$serving === null ? 0 : $serving->id()] ?? [null, null];
 
-            self::refreshOne($computers_id, $criteria, $node_lookup, $platform_lookup);
+            $criteria_key = $serving === null ? 0 : $serving->id();
+            $criteria_for[$criteria_key] ??= self::criteriaFromConfig($serving);
+
+            self::refreshOne($computers_id, $criteria_for[$criteria_key], $node_lookup, $platform_lookup);
 
             $after = new self();
             $has_after = $after->getFromDBByCrit(['computers_id' => $computers_id]);
@@ -803,7 +812,8 @@ class PluginIntegrasipamanProvisioning extends CommonDBTM
     {
         $computers_id = (int) $item->getID();
         $address      = self::pickAddress(self::addressesFor($computers_id));
-        $criteria     = self::criteriaFromConfig();
+        // Judged by the rules of the connection that serves the Computer's entity.
+        $criteria     = self::criteriaFromConfig(PluginIntegrasipamanConnection::forEntity((int) ($item->fields['entities_id'] ?? 0)));
         $verdict      = self::isEligible($item->fields, $address, $criteria);
 
         echo '<div class="alert alert-info mb-0">';

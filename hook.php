@@ -923,6 +923,10 @@ function plugin_integrasipaman_install(): bool
         'name'           => "VARCHAR(191) NOT NULL DEFAULT ''",
         'extra_entities' => "VARCHAR(255) NOT NULL DEFAULT ''",
         'last_logs_pull' => 'TIMESTAMP NULL DEFAULT NULL',
+        // v4.4.0: the rule settings this connection keeps for itself, as JSON
+        // {setting key: value}. A setting not in it is inherited (see
+        // inc/rulesettings.class.php). NULL = it overrides nothing.
+        'rules'          => 'LONGTEXT NULL',
     ] as $connection_col => $connection_type) {
         if ($DB->fieldExists($connections_table, $connection_col, false)) {
             continue;

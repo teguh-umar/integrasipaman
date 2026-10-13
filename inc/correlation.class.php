@@ -24,6 +24,7 @@ if (!defined('GLPI_ROOT')) {
 }
 
 require_once __DIR__ . '/config.class.php';
+require_once __DIR__ . '/rulesettings.class.php';
 
 class PluginIntegrasipamanCorrelation extends CommonGLPI
 {
@@ -196,7 +197,8 @@ class PluginIntegrasipamanCorrelation extends CommonGLPI
         self::discoverAssets();
         self::discoverUsers();
 
-        $cfg  = Config::getConfigurationValues(PluginIntegrasipamanConfig::CONFIG_CONTEXT);
+        // v4.4.0: this connection's rules (its own, inherited, or the defaults).
+        $cfg  = PluginIntegrasipamanRuleSettings::current();
         $mode = (string) ($cfg['correlation_match_mode'] ?? 'ip_only');
         // Same list the dropdown and the save controller use - see
         // PluginIntegrasipamanConfig::MATCH_MODES.

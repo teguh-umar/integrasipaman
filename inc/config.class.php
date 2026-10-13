@@ -298,11 +298,30 @@ class PluginIntegrasipamanConfig extends CommonDBTM
         // v4.0.0: there can be several. The form edits one of them - see
         // editedConnection() - or is the form for a new one.
         [$connection_is_new, $connection] = self::editedConnection();
+
+        // v4.4.0: the form is for one connection, for a new one, or for the
+        // defaults every connection inherits. In the last case there is no
+        // connection on the form at all.
+        $defaults_mode = self::editingDefaults();
+        if ($defaults_mode) {
+            $connection        = null;
+            $connection_is_new = false;
+        }
         foreach (PluginIntegrasipamanConnection::LEGACY_KEYS as $field => $column) {
             $config_values[$field] = $connection === null
                 ? self::CONNECTION_FORM_DEFAULTS[$field]
                 : $connection->get($column);
         }
+
+        // The rule tabs show what applies to the connection being edited: its
+        // own values, else the ones it inherits. The defaults, for the defaults
+        // form and for a connection that does not exist yet.
+        $config_values = array_merge(
+            $config_values,
+            ($defaults_mode || $connection === null)
+                ? PluginIntegrasipamanRuleSettings::defaults()
+                : PluginIntegrasipamanRuleSettings::forConnection($connection)
+        );
 
         // One tab per section, in page order (v3.8.2, matching opmanager's
         // Setup). Each entry is [full title, Tabler icon, description, short
@@ -347,6 +366,12 @@ class PluginIntegrasipamanConfig extends CommonDBTM
             ],
         ];
 
+        // The connection and PBI tabs describe a JumpServer; the defaults form
+        // has none, so they are not there.
+        if ($defaults_mode) {
+            unset($sections['connection'], $sections['pbi']);
+        }
+
         // Scoped to .integrasipaman-config so it cannot restyle a sibling
         // section in the shared PGN Suite tab. Tabler variables only, so the
         // page follows the GLPI palette and dark mode.
@@ -388,6 +413,17 @@ class PluginIntegrasipamanConfig extends CommonDBTM
             echo Html::hidden('_from_pgnsuite', ['value' => '1']);
         }
 
+        // Which connection the form is for, above the tabs: every tab but the
+        // plain settings of the instance belongs to it.
+        self::renderConnectionPicker($from_pgnsuite, $canedit, $connection_is_new, $defaults_mode, $connection);
+
+        // Says the rule tabs carry their "keeps its own rules" switches, so a
+        // POST that lacks them (a page from before 4.4.0) does not release
+        // every connection's rules to inheritance.
+        if (!$defaults_mode && $connection !== null) {
+            echo Html::hidden('rule_own_shown', ['value' => '1']);
+        }
+
         // Every pane stays in this one form whichever tab is showing, so a
         // hidden tab's fields are still posted - the absent-vs-empty guard
         // on the categories list in front/config.form.php depends on it.
@@ -402,6 +438,7 @@ class PluginIntegrasipamanConfig extends CommonDBTM
         echo '<div class="tab-content border border-top-0 rounded-bottom p-3 mb-3">';
 
         // --- JumpServer connection -----------------------------------------
+        if (!$defaults_mode) {
         self::openSection('connection', $sections['connection'], '', true);
 
         // v3.11.0: the entity that owns this JumpServer, and whether its
@@ -414,66 +451,9 @@ class PluginIntegrasipamanConfig extends CommonDBTM
         // rest of this tab, the PBI tab and the Command Storage ID belong to.
         // Only connections owned by an entity the admin is working in are
         // listed; a new one starts in that entity, never in a guessed one.
-        $select_url = Plugin::getWebDir('integrasipaman') . '/front/config.form.php?'
-            . ($from_pgnsuite ? '_from_pgnsuite=1&' : '') . 'select_connection=';
-
-        echo '<div class="col-12">';
-        echo '<div class="d-flex flex-wrap align-items-center gap-2">';
-        foreach (PluginIntegrasipamanConnection::visible(true) as $listed) {
-            $is_edited = !$connection_is_new && $connection !== null && $listed->id() === $connection->id();
-            echo '<a class="btn btn-sm ' . ($is_edited ? 'btn-primary' : 'btn-outline-secondary') . '" href="'
-                . htmlescape($select_url . $listed->id()) . '">'
-                . '<i class="ti ti-plug-connected me-1"></i>'
-                // The edited connection's label is updated as the form changes
-                // (see the script below). It shows the typed URL's host, or the
-                // typed Name; nothing is saved by it.
-                . ($is_edited
-                    ? '<span data-live-chip="1">' . htmlescape($listed->label()) . '</span>'
-                    : htmlescape($listed->label()))
-                . ' <span class="opacity-75">- ' . htmlescape((string) Dropdown::getDropdownName('glpi_entities', $listed->entity())) . '</span>'
-                . ($listed->isActive() ? '' : ' <span class="badge bg-secondary ms-1">' . htmlescape(__('off', 'integrasipaman')) . '</span>')
-                . '</a>';
-        }
-        if ($canedit) {
-            echo '<a class="btn btn-sm ' . ($connection_is_new ? 'btn-primary' : 'btn-outline-primary') . '" href="'
-                . htmlescape($select_url . 'new') . '">'
-                . '<i class="ti ti-plus me-1"></i>' . htmlescape(__('Add a connection', 'integrasipaman')) . '</a>';
-        }
-        echo '</div>';
-        // The chip is a preview of what is in the form, not of what is saved:
-        // the host of the URL typed in the form, or the Name if one is typed.
-        // The chip shows the saved value until the form changes, and Save is
-        // what stores it. Only the displayed text moves.
-        echo '<script>document.addEventListener("DOMContentLoaded", function () {'
-            . 'var chip = document.querySelector("[data-live-chip]");'
-            . 'if (!chip) { return; }'
-            . 'var original = chip.textContent;'
-            . 'var url = document.getElementById("jumpserver_url");'
-            . 'var name = document.getElementById("connection_name");'
-            . 'function host(v) {'
-            . '  v = (v || "").trim();'
-            . '  if (v === "") { return ""; }'
-            . '  try { return new URL(v.indexOf("://") === -1 ? "https://" + v : v).hostname.replace(/\.$/, ""); }'
-            . '  catch (e) { return v; }'
-            . '}'
-            . 'function refresh() {'
-            . '  var typedName = name ? name.value.trim() : "";'
-            . '  var typedHost = url ? host(url.value) : "";'
-            . '  chip.textContent = typedName !== "" ? typedName : (typedHost !== "" ? typedHost : original);'
-            . '}'
-            . 'if (url) { url.addEventListener("input", refresh); }'
-            . 'if (name) { name.addEventListener("input", refresh); }'
-            . '});</script>';
-        echo '<small class="form-hint">' . htmlescape(
-            $connection_is_new
-                ? __('New connection. Each entity can have one JumpServer of its own; fill in this tab and Save.', 'integrasipaman')
-                : __('One JumpServer per entity. This tab, the PBI DB tab and the Command Storage ID belong to the highlighted connection; the other tabs apply to all of them.', 'integrasipaman')
-        ) . '</small>';
-        echo '</div>';
-
-        // Which row the POST is for: an id, or 'new'. Never inferred on save.
-        echo Html::hidden('connection_id', ['value' => $connection_is_new ? 'new' : (string) $connection->id()]);
-
+        // (4.4.0: the list of connections is above the tabs - see
+        // renderConnectionPicker() - because the rule tabs belong to the
+        // highlighted connection too, and it has to stay visible on them.)
         echo '<div class="col-md-8">';
         echo '<label class="form-label" for="connection_name">' . htmlescape(__('Name')) . '</label>';
         echo Html::input('connection_name', [
@@ -594,8 +574,10 @@ class PluginIntegrasipamanConfig extends CommonDBTM
         echo '</div>';
 
         self::closeSection();
+        } // !$defaults_mode
 
         // --- PBI reporting database ----------------------------------------
+        if (!$defaults_mode) {
         self::openSection('pbi', $sections['pbi']);
 
         echo '<div class="col-md-6">';
@@ -656,10 +638,14 @@ class PluginIntegrasipamanConfig extends CommonDBTM
         echo '</div>';
 
         self::closeSection();
+        } // !$defaults_mode
 
         // --- Terminal command audit ----------------------------------------
-        self::openSection('terminal', $sections['terminal']);
+        // The first pane is the one shown on load: the connection's, or here the
+        // first the form has.
+        self::openSection('terminal', $sections['terminal'], '', $defaults_mode);
 
+        if (!$defaults_mode) {
         echo '<div class="col-12">';
         echo '<label class="form-label" for="jumpserver_command_storage_id">' . __('Command Storage ID', 'integrasipaman') . '</label>';
         echo Html::input('jumpserver_command_storage_id', [
@@ -669,6 +655,7 @@ class PluginIntegrasipamanConfig extends CommonDBTM
         ]);
         echo '<small class="form-hint">' . __('Required. The command_storage_id from JumpServer (Console > Command Storage).', 'integrasipaman') . '</small>';
         echo '</div>';
+        }
 
         echo '<div class="col-md-6">';
         echo '<label class="form-label" for="jumpserver_terminal_retention_months">' . __('Retention (months)', 'integrasipaman') . '</label>';
@@ -700,6 +687,7 @@ class PluginIntegrasipamanConfig extends CommonDBTM
 
         // --- Command risk evaluation ---------------------------------------
         self::openSection('risk', $sections['risk']);
+        self::renderRuleToggle(PluginIntegrasipamanRuleSettings::SECTION_RISK, $connection, $defaults_mode, $canedit);
 
         foreach ([
             'jumpserver_risk_keywords'          => [__('High-risk keywords', 'integrasipaman'), __('A command containing any of these (or JumpServer risk level >= 4) is flagged high-risk.', 'integrasipaman'), 8],
@@ -727,6 +715,8 @@ class PluginIntegrasipamanConfig extends CommonDBTM
             '<a class="btn btn-sm btn-outline-secondary text-nowrap" href="' . Plugin::getWebDir('integrasipaman') . '/front/correlation.php">'
                 . '<i class="ti ti-arrows-exchange me-1"></i>' . htmlescape(__('Manage asset & user mappings', 'integrasipaman')) . '</a>'
         );
+        self::renderRuleToggle(PluginIntegrasipamanRuleSettings::SECTION_CORRELATION, $connection, $defaults_mode, $canedit);
+
 
         echo '<div class="col-12">';
         echo '<label class="form-label" for="correlation_match_mode">' . __('Asset match mode', 'integrasipaman') . '</label>';
@@ -800,6 +790,7 @@ class PluginIntegrasipamanConfig extends CommonDBTM
 
         // --- Asset provisioning --------------------------------------------
         self::openSection('provisioning', $sections['provisioning']);
+        self::renderRuleToggle(PluginIntegrasipamanRuleSettings::SECTION_PROVISIONING, $connection, $defaults_mode, $canedit);
 
         echo '<div class="col-md-6">';
         echo '<label class="form-label">' . __('Eligible computer types', 'integrasipaman') . '</label>';
@@ -944,6 +935,27 @@ class PluginIntegrasipamanConfig extends CommonDBTM
             show(root.querySelector('a[data-bs-toggle="tab"][href="#' + pane.id + '"]'));
         }
     }, true);
+
+    // A rule tab whose connection follows the one above it shows the values it
+    // follows, greyed out: they are not posted, and Save would ignore them.
+    // Switching "keeps its own rules" on makes them editable.
+    function lock(pane, locked, keep) {
+        pane.querySelectorAll('input, select, textarea').forEach(function (el) {
+            if (el === keep || el.type === 'hidden') { return; }
+            el.disabled = locked;
+        });
+    }
+    root.querySelectorAll('[data-rule-toggle]').forEach(function (box) {
+        var pane = box.closest('.tab-pane');
+        if (!pane) { return; }
+        box.addEventListener('change', function () { lock(pane, !box.checked, box); });
+        lock(pane, !box.checked, box);
+    });
+    // A connection that does not exist yet has nothing of its own to keep.
+    root.querySelectorAll('[data-rule-locked]').forEach(function (note) {
+        var pane = note.closest('.tab-pane');
+        if (pane) { lock(pane, true, null); }
+    });
 })();
 JS);
 
@@ -976,5 +988,145 @@ JS);
     private static function closeSection(): void
     {
         echo '</div></div>';
+    }
+
+    /**
+     * Whether the signed-in user may edit the defaults every connection
+     * inherits (4.4.0). They are instance-wide: changing them changes every
+     * subsidiary that has not kept its own, so it takes the plugin's UPDATE
+     * right and access to the root entity.
+     */
+    public static function canEditDefaults(): bool
+    {
+        return Session::haveRight(PluginIntegrasipamanProfile::RIGHT_CONFIG, UPDATE)
+            && Session::haveAccessToEntity(0);
+    }
+
+    /** True when the Setup form was switched to the defaults, and may be. */
+    public static function editingDefaults(): bool
+    {
+        return ($_SESSION[self::SESSION_CONNECTION] ?? null) === 'defaults'
+            && Session::haveAccessToEntity(0);
+    }
+
+    /**
+     * The connections the form can be for, above the tabs: one chip per
+     * connection, "Add a connection", and the defaults every connection
+     * inherits. Also says which row the POST is for. Never inferred on save.
+     */
+    private static function renderConnectionPicker(
+        bool $from_pgnsuite,
+        bool $canedit,
+        bool $connection_is_new,
+        bool $defaults_mode,
+        ?PluginIntegrasipamanConnection $connection
+    ): void {
+        $select_url = Plugin::getWebDir('integrasipaman') . '/front/config.form.php?'
+            . ($from_pgnsuite ? '_from_pgnsuite=1&' : '') . 'select_connection=';
+
+        echo '<div class="mb-3">';
+        echo '<div class="d-flex flex-wrap align-items-center gap-2">';
+        foreach (PluginIntegrasipamanConnection::visible(true) as $listed) {
+            $is_edited = !$defaults_mode && !$connection_is_new && $connection !== null && $listed->id() === $connection->id();
+            echo '<a class="btn btn-sm ' . ($is_edited ? 'btn-primary' : 'btn-outline-secondary') . '" href="'
+                . htmlescape($select_url . $listed->id()) . '">'
+                . '<i class="ti ti-plug-connected me-1"></i>'
+                // The edited connection's label is updated as the form changes
+                // (see the script below). It shows the typed URL's host, or the
+                // typed Name; nothing is saved by it.
+                . ($is_edited
+                    ? '<span data-live-chip="1">' . htmlescape($listed->label()) . '</span>'
+                    : htmlescape($listed->label()))
+                . ' <span class="opacity-75">- ' . htmlescape((string) Dropdown::getDropdownName('glpi_entities', $listed->entity())) . '</span>'
+                . ($listed->isActive() ? '' : ' <span class="badge bg-secondary ms-1">' . htmlescape(__('off', 'integrasipaman')) . '</span>')
+                . '</a>';
+        }
+        if ($canedit) {
+            echo '<a class="btn btn-sm ' . ($connection_is_new ? 'btn-primary' : 'btn-outline-primary') . '" href="'
+                . htmlescape($select_url . 'new') . '">'
+                . '<i class="ti ti-plus me-1"></i>' . htmlescape(__('Add a connection', 'integrasipaman')) . '</a>';
+        }
+        // The defaults are a separate form: only for those who may change them
+        // for everyone, but anyone who can see the root entity can read them.
+        if (Session::haveAccessToEntity(0)) {
+            echo '<a class="btn btn-sm ' . ($defaults_mode ? 'btn-primary' : 'btn-outline-secondary') . '" href="'
+                . htmlescape($select_url . 'defaults') . '">'
+                . '<i class="ti ti-adjustments me-1"></i>' . htmlescape(__('Defaults for all connections', 'integrasipaman')) . '</a>';
+        }
+        echo '</div>';
+        // The chip is a preview of what is in the form, not of what is saved:
+        // the host of the URL typed in the form, or the Name if one is typed.
+        // The chip shows the saved value until the form changes, and Save is
+        // what stores it. Only the displayed text moves.
+        echo '<script>document.addEventListener("DOMContentLoaded", function () {'
+            . 'var chip = document.querySelector("[data-live-chip]");'
+            . 'if (!chip) { return; }'
+            . 'var original = chip.textContent;'
+            . 'var url = document.getElementById("jumpserver_url");'
+            . 'var name = document.getElementById("connection_name");'
+            . 'function host(v) {'
+            . '  v = (v || "").trim();'
+            . '  if (v === "") { return ""; }'
+            . '  try { return new URL(v.indexOf("://") === -1 ? "https://" + v : v).hostname.replace(/\.$/, ""); }'
+            . '  catch (e) { return v; }'
+            . '}'
+            . 'function refresh() {'
+            . '  var typedName = name ? name.value.trim() : "";'
+            . '  var typedHost = url ? host(url.value) : "";'
+            . '  chip.textContent = typedName !== "" ? typedName : (typedHost !== "" ? typedHost : original);'
+            . '}'
+            . 'if (url) { url.addEventListener("input", refresh); }'
+            . 'if (name) { name.addEventListener("input", refresh); }'
+            . '});</script>';
+        if ($defaults_mode) {
+            $hint = __('The defaults every connection inherits. A connection keeps its own rules by switching that on its Risk Rules, Correlation or Provisioning tab; until then it follows these.', 'integrasipaman');
+        } elseif ($connection_is_new) {
+            $hint = __('New connection. Each entity can have one JumpServer of its own; fill in the Connection tab and Save. It follows the defaults until you give it rules of its own.', 'integrasipaman');
+        } else {
+            $hint = __('One JumpServer per entity. The Connection, PBI DB and Terminal Audit tabs belong to the highlighted connection, and so do the three rule tabs: each follows the connection above it, or the defaults, until this connection keeps its own.', 'integrasipaman');
+        }
+        echo '<small class="form-hint">' . htmlescape($hint) . '</small>';
+        echo '</div>';
+
+        // Which row the POST is for: an id, 'new' or 'defaults'.
+        echo Html::hidden('connection_id', [
+            'value' => $defaults_mode ? 'defaults' : ($connection_is_new || $connection === null ? 'new' : (string) $connection->id()),
+        ]);
+    }
+
+    /**
+     * The switch at the top of a rule tab: this connection keeps its own
+     * rules, or follows the connection above it (4.4.0). On the defaults form
+     * there is no switch, and for a connection that does not exist yet the
+     * fields only show what it will inherit.
+     */
+    private static function renderRuleToggle(string $section, ?PluginIntegrasipamanConnection $connection, bool $defaults_mode, bool $canedit): void
+    {
+        echo '<div class="col-12">';
+
+        if ($defaults_mode) {
+            echo '<div class="alert alert-info mb-0 py-2">'
+                . htmlescape(__('These are the defaults. Every connection follows them unless it keeps its own rules on this tab.', 'integrasipaman')) . '</div>';
+        } elseif ($connection === null) {
+            echo '<div class="alert alert-info mb-0 py-2" data-rule-locked="1">'
+                . htmlescape(__('A new connection follows the defaults shown here. Save it first; then it can keep its own rules on this tab.', 'integrasipaman')) . '</div>';
+        } else {
+            $source = PluginIntegrasipamanRuleSettings::sourceOf($connection, $section);
+            echo '<label class="form-check form-switch mb-1">'
+                . '<input type="checkbox" class="form-check-input" name="rule_own[' . htmlescape($section) . ']" value="1" data-rule-toggle="1"'
+                . ($source['own'] ? ' checked' : '') . ($canedit ? '' : ' disabled') . '>'
+                . '<span class="form-check-label fw-bold">'
+                . htmlescape(sprintf(__('%s keeps its own rules on this tab', 'integrasipaman'), $connection->label())) . '</span></label>';
+            if ($source['own']) {
+                $note = __('The values below are this connection\'s own. Connections under it follow them.', 'integrasipaman');
+            } elseif ($source['from'] !== null) {
+                $note = sprintf(__('Following %s. Switch this on to give the connection rules of its own, starting from these values.', 'integrasipaman'), $source['from']->label());
+            } else {
+                $note = __('Following the defaults for all connections. Switch this on to give the connection rules of its own, starting from the defaults.', 'integrasipaman');
+            }
+            echo '<div class="form-hint">' . htmlescape($note) . '</div>';
+        }
+
+        echo '</div>';
     }
 }

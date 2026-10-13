@@ -471,6 +471,100 @@ class PluginIntegrasipamanConnection
     }
 
     /**
+     * The rule settings this connection keeps for itself (v4.4.0): setting key
+     * => value, as stored. A setting that is not here is inherited; see
+     * PluginIntegrasipamanRuleSettings.
+     *
+     * @return array<string,string>
+     */
+    public function rules(): array
+    {
+        $decoded = json_decode((string) ($this->fields['rules'] ?? ''), true);
+        if (!is_array($decoded)) {
+            return [];
+        }
+
+        $out = [];
+        foreach ($decoded as $key => $value) {
+            if (is_string($key) && is_scalar($value)) {
+                $out[$key] = (string) $value;
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * The connection this one inherits its rules from: the nearest active
+     * connection above its owning entity that has "child entities" on and
+     * owns, or lists as an additional entity, one of the entities on the way
+     * up. Null when there is none, and then the instance defaults apply.
+     */
+    public function inheritsFrom(): ?self
+    {
+        $parents = self::parents();
+        $seen    = [$this->entity() => true];
+        $at      = $parents[$this->entity()] ?? null;
+
+        while ($at !== null && !isset($seen[$at])) {
+            $seen[$at] = true;
+            // The owner of an entity first, then a connection that lists it.
+            $listed = null;
+            foreach (self::all() as $other) {
+                if ($other->id() === $this->id() || !$other->isRecursive()) {
+                    continue;
+                }
+                if ($other->entity() === $at) {
+                    return $other;
+                }
+                if ($listed === null && in_array($at, $other->extraEntities(), true)) {
+                    $listed = $other;
+                }
+            }
+            if ($listed !== null) {
+                return $listed;
+            }
+            $at = $parents[$at] ?? null;
+        }
+
+        return null;
+    }
+
+    /**
+     * Replace the rule settings a connection keeps for itself. Only keys the
+     * rule settings know are stored; an empty map makes it inherit everything.
+     *
+     * @param array<string,string> $rules setting key => value
+     * @return string '' on success, otherwise why nothing was written
+     */
+    public static function saveRules(int $id, array $rules): string
+    {
+        global $DB;
+
+        require_once __DIR__ . '/rulesettings.class.php';
+
+        if ((self::every()[$id] ?? null) === null) {
+            return 'no such connection';
+        }
+
+        $keep = [];
+        foreach ($rules as $key => $value) {
+            if (is_string($key) && in_array($key, PluginIntegrasipamanRuleSettings::keys(), true) && is_scalar($value)) {
+                $keep[$key] = (string) $value;
+            }
+        }
+
+        $encoded = $keep === [] ? null : json_encode($keep, JSON_INVALID_UTF8_SUBSTITUTE);
+        if (!$DB->update(self::TABLE, ['rules' => $encoded, 'date_mod' => $_SESSION['glpi_currenttime'] ?? date('Y-m-d H:i:s')], ['id' => $id])) {
+            return 'the database refused the row: ' . $DB->error();
+        }
+
+        self::reset();
+
+        return '';
+    }
+
+    /**
      * What to call this connection in a log line or a list: its name, or
      * failing that the host of its URL, or its id.
      */

@@ -145,7 +145,8 @@ check(preg_match('/!\s*array_key_exists\(\s*\'jumpserver_command_categories\'\s*
       'the save controller distinguishes an ABSENT categories field from an '
     . 'empty one, so a POST from a pre-upgrade Setup tab leaves the stored '
     . 'list alone instead of wiping it');
-check(preg_match('/unset\(\s*\$config_values\[\'jumpserver_command_categories\'\]\s*\)/', $form) === 1,
+// 4.4.0: the rule lists are in $rule_values (they go to a connection, or to the defaults).
+check(preg_match('/unset\(\s*\$rule_values\[\'jumpserver_command_categories\'\]\s*\)/', $form) === 1,
       'and it acts on that by dropping the key from the save array, which is '
     . 'the only way the stored value survives - Config::setConfigurationValues '
     . 'writes every key it is given');

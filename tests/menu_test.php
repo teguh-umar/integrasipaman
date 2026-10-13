@@ -79,8 +79,8 @@ check(!method_exists($M, 'getMenuContent'),
       'the old sector getMenuContent() is gone - nothing registers this class as a sector');
 
 $options = $entry['options'] ?? [];
-check(array_keys($options) === ['insights', 'report', 'sessionsharing', 'setup'],
-      'read-only user gets insights / report / sessionsharing / setup, in that order');
+check(array_keys($options) === ['insights', 'report', 'loginfailures', 'sessionsharing', 'setup'],
+      'read-only user gets insights / report / loginfailures / sessionsharing / setup, in that order');
 check(!isset($options['activity']),
       'Activity Log is not a menu option - front/export.php renders no GLPI chrome');
 check(!isset($options['correlation']),
@@ -107,8 +107,8 @@ foreach ($options as $key => $option) {
 // this same $options_rw.
 grant(READ | UPDATE, READ, READ);
 $options_rw = $M::entry()['options'];
-check(array_keys($options_rw) === ['insights', 'report', 'sessionsharing', 'correlation', 'provisioning', 'setup'],
-      'full rights -> the six pages: the old five, with session sharing after the report');
+check(array_keys($options_rw) === ['insights', 'report', 'loginfailures', 'sessionsharing', 'correlation', 'provisioning', 'setup'],
+      'full rights -> the seven pages: the old five, with login failures and session sharing after the report');
 check($options_rw['correlation']['page'] === $BASE . '/correlation.php',
       'correlation points at its own controller');
 check($options_rw['report']['page'] === $BASE . '/pbi.php?tab=report',
@@ -138,7 +138,7 @@ check($M::entry() === null, 'no right at all -> entry hidden');
 grant(0, READ);
 $entry = $M::entry();
 check(is_array($entry), 'reports-only -> entry still returned');
-check(array_keys($entry['options']) === ['insights', 'report', 'sessionsharing'],
+check(array_keys($entry['options']) === ['insights', 'report', 'loginfailures', 'sessionsharing'],
       'reports-only sees insights + report + session sharing, and not Setup / correlation / provisioning');
 
 // --- config-only: settings without the audit detail -------------------------
@@ -188,8 +188,8 @@ foreach (glob($front . '/*.php') as $file) {
     check(preg_match("/Html::header\([^;]*''\s*,\s*'integrasipaman'\s*,/", $src) === 0,
           "$name: no header left in the old 'integrasipaman' sector");
 }
-check(count($used) > 0 && array_sum(array_map('count', $used)) === 15,
-      'all 15 chrome-rendering front controllers were found');
+check(count($used) > 0 && array_sum(array_map('count', $used)) === 16,
+      'all 16 chrome-rendering front controllers were found');
 foreach ($used as $key => $files) {
     if ($key === '$tab') {
         continue;

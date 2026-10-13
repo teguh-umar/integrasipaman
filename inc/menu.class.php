@@ -101,6 +101,13 @@ class PluginIntegrasipamanMenu extends CommonGLPI
                 'icon'  => 'ti ti-file-analytics',
                 'links' => ['search' => $report],
             ];
+            // 4.3.0: why logins were refused, lockouts, accounts that keep failing.
+            $options['loginfailures'] = [
+                'title' => __('Login failures', 'integrasipaman'),
+                'page'  => self::BASE . '/loginfailures.php',
+                'icon'  => 'ti ti-lock-exclamation',
+                'links' => ['search' => self::BASE . '/loginfailures.php'],
+            ];
             // 4.2.0: who shared a session, with whom. Same right as the report.
             $options['sessionsharing'] = [
                 'title' => __('Session sharing', 'integrasipaman'),

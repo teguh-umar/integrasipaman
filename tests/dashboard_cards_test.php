@@ -183,7 +183,7 @@ namespace {
           'the list is offered in the Add widget panel as a multipleNumber');
     check($cards['jumpserver_recent_events']['provider'] === 'PluginIntegrasipamanDashboard::provideRecentEvents',
           'its provider is a "Class::method" string (core explodes it; a Closure would fatal)');
-    check(count($cards) === 6, 'beside the five that were there');
+    check(count($cards) === 7, 'beside the six that were there (4.3.0 added login lockouts)');
 
     echo $fails === 0 ? "\nALL PASS\n" : "\n$fails FAILURE(S)\n";
     exit($fails === 0 ? 0 : 1);

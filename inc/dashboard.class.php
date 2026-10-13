@@ -38,6 +38,7 @@ class PluginIntegrasipamanDashboard extends CommonGLPI
     private const CARD_LOGIN_FAILURES_ID  = 'jumpserver_login_failures';
     private const CARD_SESSION_SHARING_ID = 'jumpserver_session_sharing';
     private const CARD_RECENT_ID          = 'jumpserver_recent_events';
+    private const CARD_LOCKOUTS_ID        = 'jumpserver_login_lockouts';
 
     /** Rows listed by the "Recent Events" card. */
     private const RECENT_LIMIT = 10;
@@ -150,6 +151,15 @@ class PluginIntegrasipamanDashboard extends CommonGLPI
             'provider'   => self::class . '::provideLoginFailures',
         ];
 
+        // 4.3.0: logins refused because of too many / too frequent attempts.
+        $cards[self::CARD_LOCKOUTS_ID] = [
+            'widgettype' => ['bigNumber'],
+            'label'      => __('JumpServer Login Lockouts', 'integrasipaman'),
+            'group'      => $group,
+            'filters'    => $filters,
+            'provider'   => self::class . '::provideLoginLockouts',
+        ];
+
         $cards[self::CARD_SESSION_SHARING_ID] = [
             'widgettype' => ['bigNumber'],
             'label'      => __('JumpServer Session Sharing', 'integrasipaman'),
@@ -190,6 +200,7 @@ class PluginIntegrasipamanDashboard extends CommonGLPI
         $tiles = [
             self::provideTotalEvents(),
             self::provideLoginFailures(),
+            self::provideLoginLockouts(),
             self::provideSessionSharing(),
         ];
 
@@ -203,11 +214,15 @@ class PluginIntegrasipamanDashboard extends CommonGLPI
                 ? ' style="--kpi-accent:' . htmlescape($tile['color']) . '"'
                 : '';
 
-            echo '<div class="card integrasipaman-kpi"' . $accent . '>';
+            // A tile with a page behind it is a link to that page.
+            $url = (string) ($tile['url'] ?? '');
+            echo $url !== ''
+                ? '<a class="card integrasipaman-kpi text-reset text-decoration-none" href="' . htmlescape($url) . '"' . $accent . '>'
+                : '<div class="card integrasipaman-kpi"' . $accent . '>';
             echo '<i class="' . htmlescape($icon) . ' integrasipaman-kpi-icon" aria-hidden="true"></i>';
             echo '<span class="integrasipaman-kpi-number">' . htmlescape($number) . '</span>';
             echo '<span class="integrasipaman-kpi-label">' . htmlescape($label) . '</span>';
-            echo '</div>';
+            echo $url !== '' ? '</a>' : '</div>';
         }
 
         echo '</div>';
@@ -347,7 +362,62 @@ CSS;
             'number' => $number,
             'icon'   => 'ti ti-lock-exclamation',
             'color'  => '#d63939',
+            'url'    => self::pageUrl('loginfailures.php', self::windowQuery($params)),
         ] + self::labelWithDelta(__('JumpServer Login Failures', 'integrasipaman'), $params, 'user_login_failed', $number);
+    }
+
+    /**
+     * Provider for the "Login Lockouts" bigNumber card: failed logins whose
+     * reason says too many or too frequent attempts (see
+     * PluginIntegrasipamanLoginFailures::LOCKOUT_WORDS). Clicking it opens the
+     * Login failures page on the lockouts of the same period.
+     *
+     * @return array<string, mixed>
+     */
+    public static function provideLoginLockouts(array $params = []): array
+    {
+        $label = __('JumpServer Login Lockouts', 'integrasipaman');
+        if (!self::canViewCards()) {
+            return ['number' => 0, 'label' => $label, 'icon' => 'ti ti-lock'];
+        }
+
+        require_once __DIR__ . '/loginfailures.class.php';
+
+        return [
+            'number' => PluginIntegrasipamanLoginFailures::countLockouts(
+                self::fetchRows(self::withEventTypeFilter($params, 'user_login_failed'), PluginIntegrasipamanLoginFailures::ROW_LIMIT)
+            ),
+            'label'  => $label,
+            'icon'   => 'ti ti-lock',
+            'color'  => '#d63939',
+            'url'    => self::pageUrl('loginfailures.php', self::windowQuery($params) + ['only' => 'locked']),
+        ];
+    }
+
+    /**
+     * Address of one of the plugin's pages, for a card to link to. Root-relative
+     * when core's Plugin class is not there to ask.
+     *
+     * @param array<string, string> $query
+     */
+    private static function pageUrl(string $page, array $query = []): string
+    {
+        $base = class_exists('Plugin') ? Plugin::getWebDir('integrasipaman') : '/plugins/integrasipaman';
+
+        return $base . '/front/' . $page . ($query === [] ? '' : '?' . http_build_query($query));
+    }
+
+    /**
+     * The from / to a page needs to show the period a card counts: the
+     * dashboard's date filter, or the fixed lookback.
+     *
+     * @return array<string, string>
+     */
+    private static function windowQuery(array $params): array
+    {
+        $window = self::periodWindow($params);
+
+        return $window === null ? [] : ['from' => substr($window[0], 0, 10), 'to' => substr($window[1], 0, 10)];
     }
 
     /**
@@ -375,6 +445,7 @@ CSS;
         return [
             'number' => $number,
             'icon'   => 'ti ti-users',
+            'url'    => self::pageUrl('sessionsharing.php', self::windowQuery($params)),
         ] + self::labelWithDelta(__('JumpServer Session Sharing', 'integrasipaman'), $params, 'session_share', $number);
     }
 

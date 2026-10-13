@@ -37,7 +37,10 @@ class PluginIntegrasipamanDashboard extends CommonGLPI
     private const CARD_BY_TYPE_BAR_ID     = 'jumpserver_events_by_type_bar';
     private const CARD_LOGIN_FAILURES_ID  = 'jumpserver_login_failures';
     private const CARD_SESSION_SHARING_ID = 'jumpserver_session_sharing';
+    private const CARD_RECENT_ID          = 'jumpserver_recent_events';
 
+    /** Rows listed by the "Recent Events" card. */
+    private const RECENT_LIMIT = 10;
     /**
      * Fixed lookback window for both cards (see class docblock: GLPI's
      * native card editor has no field for this to be end-user configurable).
@@ -155,6 +158,17 @@ class PluginIntegrasipamanDashboard extends CommonGLPI
             'provider'   => self::class . '::provideSessionSharing',
         ];
 
+        // 4.1.0: the table-like card of the design. Core GLPI has no generic
+        // table widget; multipleNumber lists rows and escapes every label, which
+        // matters here because user names and asset names come from JumpServer.
+        $cards[self::CARD_RECENT_ID] = [
+            'widgettype' => ['multipleNumber'],
+            'label'      => __('JumpServer Recent Events', 'integrasipaman'),
+            'group'      => $group,
+            'filters'    => $filters,
+            'provider'   => self::class . '::provideRecentEvents',
+        ];
+
         return $cards;
     }
 
@@ -255,11 +269,12 @@ CSS;
             return ['number' => 0, 'label' => __('JumpServer Total Events', 'integrasipaman'), 'icon' => 'ti ti-terminal-2'];
         }
 
+        $number = self::countTotal(self::resolveWhereClause($params));
+
         return [
-            'number' => self::countTotal(self::resolveWhereClause($params)),
-            'label'  => __('JumpServer Total Events', 'integrasipaman'),
+            'number' => $number,
             'icon'   => 'ti ti-terminal-2',
-        ];
+        ] + self::labelWithDelta(__('JumpServer Total Events', 'integrasipaman'), $params, null, $number);
     }
 
     /**
@@ -326,12 +341,13 @@ CSS;
 
         $where = self::withEventTypeFilter($params, 'user_login_failed');
 
+        $number = self::countTotal($where);
+
         return [
-            'number' => self::countTotal($where),
-            'label'  => __('JumpServer Login Failures', 'integrasipaman'),
+            'number' => $number,
             'icon'   => 'ti ti-lock-exclamation',
             'color'  => '#d63939',
-        ];
+        ] + self::labelWithDelta(__('JumpServer Login Failures', 'integrasipaman'), $params, 'user_login_failed', $number);
     }
 
     /**
@@ -354,11 +370,189 @@ CSS;
 
         $where = self::withEventTypeFilter($params, 'session_share');
 
+        $number = self::countTotal($where);
+
         return [
-            'number' => self::countTotal($where),
-            'label'  => __('JumpServer Session Sharing', 'integrasipaman'),
+            'number' => $number,
             'icon'   => 'ti ti-users',
+        ] + self::labelWithDelta(__('JumpServer Session Sharing', 'integrasipaman'), $params, 'session_share', $number);
+    }
+
+    /**
+     * Provider for the "Recent Events" card (4.1.0): the newest rows of the
+     * window, newest first. Restricted to the viewer's entities by
+     * fetchRows(), like every other read of the log table.
+     *
+     * @return array<string, mixed>
+     */
+    public static function provideRecentEvents(array $params = []): array
+    {
+        $label = __('JumpServer Recent Events', 'integrasipaman');
+        if (!self::canViewCards()) {
+            return ['data' => [], 'label' => $label, 'icon' => 'ti ti-list-details'];
+        }
+
+        $data = [];
+        foreach (self::fetchRows(self::resolveWhereClause($params), self::RECENT_LIMIT) as $row) {
+            $data[] = self::recentEntry($row);
+        }
+
+        return ['data' => $data, 'label' => $label, 'icon' => 'ti ti-list-details'];
+    }
+
+    /**
+     * One list entry: the time on the left (the widget's number slot accepts
+     * preformatted text), then "event - user@asset". The widget escapes the
+     * label; nothing here is HTML.
+     *
+     * @param array<string, mixed> $row
+     * @return array{number: string, label: string, icon: string, color?: string}
+     */
+    public static function recentEntry(array $row): array
+    {
+        $when    = strtotime((string) ($row['date_creation'] ?? ''));
+        $user    = trim((string) ($row['username'] ?? ''));
+        $asset   = trim((string) ($row['asset_name'] ?? ''));
+        $status  = (string) ($row['status'] ?? '');
+        $subject = ($user !== '' ? $user : '-') . '@' . ($asset !== '' ? $asset : '-');
+
+        $entry = [
+            'number' => $when === false ? '-' : date('d/m H:i', $when),
+            'label'  => trim((string) ($row['event_type'] ?? '')) . ' - ' . $subject,
+            'icon'   => $status === 'success' ? 'ti ti-check' : 'ti ti-x',
         ];
+        if ($status !== 'success') {
+            $entry['color'] = '#d63939';
+        }
+
+        return $entry;
+    }
+
+    /**
+     * The card label with the change against the previous period appended,
+     * and the full sentence as the tooltip.
+     *
+     * @return array{label: string, alt?: string}
+     */
+    private static function labelWithDelta(string $label, array $params, ?string $event_type, int $headline): array
+    {
+        $delta = self::deltaFor($params, $event_type, $headline);
+        if ($delta === null) {
+            return ['label' => $label];
+        }
+
+        return [
+            'label' => $label . ' (' . $delta['text'] . ')',
+            'alt'   => sprintf(
+                __('%1$s in this period, %2$s in the period before it.', 'integrasipaman'),
+                $delta['current'],
+                $delta['previous']
+            ),
+        ];
+    }
+
+    /**
+     * Compare the period of the card with the period of the same length right
+     * before it.
+     *
+     * The window is worked out here, from the dashboard's date filter or the
+     * fixed lookback. Null - no change is shown - when it cannot be worked out
+     * or when this query does not reproduce the number the card is showing:
+     * two figures that disagree about the same period are worse than one.
+     *
+     * @return array{text: string, current: int, previous: int}|null
+     */
+    private static function deltaFor(array $params, ?string $event_type, int $headline): ?array
+    {
+        $window = self::periodWindow($params);
+        if ($window === null) {
+            return null;
+        }
+
+        $current = self::countTotal(self::windowWhere($window, $event_type));
+        if ($current !== $headline) {
+            return null;
+        }
+
+        $previous = self::countTotal(self::windowWhere(self::previousWindow($window), $event_type));
+        $text     = self::deltaText($current, $previous);
+
+        return $text === '' ? null : ['text' => $text, 'current' => $current, 'previous' => $previous];
+    }
+
+    /**
+     * [begin, end] of the card's period, as datetimes; null when the
+     * dashboard's date filter holds values that are not dates.
+     *
+     * @return array{0: string, 1: string}|null
+     */
+    private static function periodWindow(array $params): ?array
+    {
+        $apply_filters = is_array($params['apply_filters'] ?? null) ? $params['apply_filters'] : [];
+        $dates_id      = \Glpi\Dashboard\Filters\DatesFilter::getId();
+        $value         = $apply_filters[$dates_id] ?? null;
+
+        // Same rule as resolveWhereClause(): only a filter with two values
+        // restricts; anything else falls back to the fixed lookback.
+        if (is_array($value) && count($value) === 2) {
+            $from = strtotime((string) reset($value));
+            $to   = strtotime((string) end($value));
+            if ($from === false || $to === false || $to < $from) {
+                return null;
+            }
+
+            return [date('Y-m-d 00:00:00', $from), date('Y-m-d 23:59:59', $to)];
+        }
+
+        [$begin, $end] = self::resolveDateRange('last_' . self::CARD_LOOKBACK_DAYS . '_days', '', '');
+
+        return $begin === null || $end === null ? null : [$begin, $end];
+    }
+
+    /**
+     * The period of the same length that ends one second before $window starts.
+     *
+     * @param array{0: string, 1: string} $window
+     * @return array{0: string, 1: string}
+     */
+    public static function previousWindow(array $window): array
+    {
+        $begin  = strtotime($window[0]);
+        $length = strtotime($window[1]) - $begin + 1;
+
+        return [date('Y-m-d H:i:s', $begin - $length), date('Y-m-d H:i:s', $begin - 1)];
+    }
+
+    /**
+     * @param array{0: string, 1: string} $window
+     * @return array<int|string, mixed>
+     */
+    private static function windowWhere(array $window, ?string $event_type): array
+    {
+        $where = [
+            ['date_creation' => ['>=', $window[0]]],
+            ['date_creation' => ['<=', $window[1]]],
+        ];
+        if ($event_type !== null) {
+            $where['event_type'] = $event_type;
+        }
+
+        return $where;
+    }
+
+    /**
+     * "▲ 12%", "▼ 8%", "= 0%", "▲ new" (it was zero before), or '' when there
+     * is nothing to compare (zero in both periods).
+     */
+    public static function deltaText(int $current, int $previous): string
+    {
+        if ($previous <= 0) {
+            return $current > 0 ? "\u{25B2} " . __('new', 'integrasipaman') : '';
+        }
+
+        $percent = (int) round(($current - $previous) / $previous * 100);
+
+        return ($percent > 0 ? "\u{25B2} " : ($percent < 0 ? "\u{25BC} " : '= ')) . abs($percent) . '%';
     }
 
     /**

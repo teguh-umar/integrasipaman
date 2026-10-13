@@ -761,8 +761,8 @@ check(str_contains($config, "'connection_extra_entities'") && str_contains($conf
       'and has the name, the additional entities (with a marker, since an emptied multi-select posts nothing) and the on/off switch');
 check(str_contains($config, "(int) (\$_SESSION['glpiactive_entity'] ?? 0)") && !str_contains($config, 'defaultEntity()'),
       'a new connection starts in the entity the admin is working in - the guessed default is gone from the form');
-check(preg_match('/if \(Session::haveAccessToEntity\(\(int\) \$e\[\'id\'\]\)\) \{\s*\$coverable/', $config) === 1,
-      'only entities the admin has access to are offered as additional entities');
+check(preg_match('/if \(\(int\) \$e\[\'id\'\] > 0 && Session::haveAccessToEntity\(\(int\) \$e\[\'id\'\]\)\) \{\s*\$coverable/', $config) === 1,
+      'only entities the admin has access to are offered as additional entities, and never the root (4.4.2)');
 check(str_contains($form, "PluginIntegrasipamanConnection::visible(true)[(int) \$posted_connection] ?? null")
       && !str_contains($form, 'PluginIntegrasipamanConnection::current()'),
       'the controller saves the posted connection, and only one the admin may see');
@@ -795,8 +795,18 @@ check(str_contains($frm_src, 'array_merge($posted, $kept)'),
       'the saved list is the visible choice plus the kept ones');
 check(preg_match('/foreach \(\$posted as \$extra_entity\) \{\s*if \(!in_array\(\$extra_entity, \$already, true\) && !Session::haveAccessToEntity/', $frm_src) === 1,
       'the access check covers only what is ADDED, so a covered entity the admin cannot see does not block Save even when the form posts it back (4.4.1: ICT + OT on production)');
-check(preg_match('/\$e !== 0 \|\| Session::haveAccessToEntity\(0\)/', $frm_src) === 1,
-      'and a root entity posted by an admin who cannot see the root is dropped, not an error: the list never offers it');
+check(substr_count($frm_src, 'static fn ($n) => $n > 0') >= 2 && !preg_match("/connection_extra_entities(_kept)?'\] \?\? \[\]\)\),\s*static fn \(\\\$n\) => \\\$n >= 0/", $frm_src),
+      'a 0 in the posted additional entities (or the kept ones) is dropped, never stored or refused (4.4.2): the root is not an additional entity');
+
+// 4.4.2: 4.4.0 stored "0" on production - an empty multi-select selected the root by itself - and on a
+// connection with child entities the root is the whole installation.
+check(PluginIntegrasipamanConnection::setCurrent(['id' => 1, 'entities_id' => 6, 'is_recursive' => 1, 'extra_entities' => '0']) === null
+      && $C::current()->extraEntities() === [], 'a stored "0" is read as no additional entity');
+$C::setCurrent(['id' => 1, 'entities_id' => 6, 'is_recursive' => 1, 'extra_entities' => '0,22,0,x,22, 7']);
+check($C::current()->extraEntities() === [22, 7], 'and a 0 among others is dropped, the rest kept in order, once each');
+$hook = (string) file_get_contents("$root/hook.php");
+check(str_contains($hook, "(int) \$extra_part > 0") && str_contains($hook, "\$DB->update(\$connections_table, ['extra_entities' => \$cleaned]"),
+      'install takes the stored 0 out of every connection, once, and keeps the entities beside it');
 
 // core restricts the four lists and their forms: the 3.11.0 override is gone
 foreach (['assetmap', 'usermap', 'nodemap', 'platformmap', 'provisioning'] as $class) {

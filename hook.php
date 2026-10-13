@@ -937,6 +937,24 @@ function plugin_integrasipaman_install(): bool
         }
     }
 
+    // v4.4.2: the root entity is not an additional entity. 4.4.0 stored one on
+    // production ("0": an empty multi-select selected the root by itself), and on
+    // a connection with child entities that is the whole installation. Taken out
+    // wherever it is, once; what the connection covers beside it is kept.
+    foreach ($DB->request(['SELECT' => ['id', 'extra_entities'], 'FROM' => $connections_table]) as $extra_row) {
+        $kept_ids = [];
+        foreach (explode(',', (string) $extra_row['extra_entities']) as $extra_part) {
+            $extra_part = trim($extra_part);
+            if ($extra_part !== '' && ctype_digit($extra_part) && (int) $extra_part > 0) {
+                $kept_ids[] = (int) $extra_part;
+            }
+        }
+        $cleaned = implode(',', array_values(array_unique($kept_ids)));
+        if ($cleaned !== (string) $extra_row['extra_entities']) {
+            $DB->update($connections_table, ['extra_entities' => $cleaned], ['id' => (int) $extra_row['id']]);
+        }
+    }
+
     $default_key_sign = DBConnection::getDefaultPrimaryKeySignOption();
     $connection_fk    = PluginIntegrasipamanConnection::FK;
 

@@ -1221,9 +1221,14 @@ class PluginIntegrasipamanConnection
     }
 
     /**
-     * Distinct non-negative ids from a comma list, in order, without $not
+     * Distinct positive ids from a comma list, in order, without $not
      * (a connection does not list its own entity as an additional one).
-     * Entity 0 is the root and a legitimate id.
+     *
+     * Never 0. The root entity is not an additional entity: with "child
+     * entities" on it would make the connection serve every entity of the
+     * installation. A 0 here is a mistake that was stored (4.4.0 stored one
+     * on production: an empty multi-select selected the root by itself), so
+     * it is read as nothing, and install removes it.
      *
      * @return int[]
      */
@@ -1236,7 +1241,7 @@ class PluginIntegrasipamanConnection
                 continue;
             }
             $id = (int) $part;
-            if ($id !== $not && !in_array($id, $out, true)) {
+            if ($id > 0 && $id !== $not && !in_array($id, $out, true)) {
                 $out[] = $id;
             }
         }

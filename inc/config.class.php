@@ -491,9 +491,14 @@ class PluginIntegrasipamanConfig extends CommonDBTM
         // Entities that use this JumpServer without being under its owner -
         // a sibling that shares the bastion and so cannot have a connection
         // of its own. Offered: the entities the admin has access to.
+        //
+        // Never the root entity (4.4.2). Covering the root with "child entities"
+        // on is covering everything, so it is not a choice this list can offer;
+        // and its presence made it the entity a multi-select with nothing
+        // selected picked by itself, which saved it without anyone choosing it.
         $coverable = [];
         foreach ($DB->request(['SELECT' => ['id', 'completename'], 'FROM' => 'glpi_entities', 'ORDER' => 'completename ASC']) as $e) {
-            if (Session::haveAccessToEntity((int) $e['id'])) {
+            if ((int) $e['id'] > 0 && Session::haveAccessToEntity((int) $e['id'])) {
                 $coverable[(int) $e['id']] = (string) $e['completename'];
             }
         }

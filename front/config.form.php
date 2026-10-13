@@ -248,21 +248,19 @@ if (isset($_POST['update'])) {
     // one of them an entity the admin has access to.
     $connection_extra = null;
     if (!empty($_POST['connection_extra_entities_shown'])) {
+        // Positive ids only (4.4.2). The root entity is not an additional entity,
+        // and a 0 in this list was never chosen: the multi-select picked the
+        // root by itself when nothing was selected, which is how 4.4.0 stored
+        // "0" on production and refused an admin who could not see the root.
         $posted = array_values(array_unique(array_filter(
             array_map('intval', (array) ($_POST['connection_extra_entities'] ?? [])),
-            static fn ($n) => $n >= 0
+            static fn ($n) => $n > 0
         )));
         $already = $connection === null ? [] : $connection->extraEntities();
         // 4.4.1: only a CHANGE is checked. An entity the connection already
         // covers is not added by this POST, so it needs no access to stay: a
         // form that posts it back (the page keeps a covered entity the admin
-        // cannot see) must not be refused for that. And a root entity that
-        // arrives from an admin with no access to the root is not a choice
-        // anyone could have made on this form: the list never offers it.
-        $posted = array_values(array_filter(
-            $posted,
-            static fn (int $e): bool => in_array($e, $already, true) || $e !== 0 || Session::haveAccessToEntity(0)
-        ));
+        // cannot see) must not be refused for that.
         // Only the entities the admin can see are checked and can be changed.
         foreach ($posted as $extra_entity) {
             if (!in_array($extra_entity, $already, true) && !Session::haveAccessToEntity($extra_entity)) {
@@ -279,7 +277,7 @@ if (isset($_POST['update'])) {
         // (4.0.2). An admin without access to OT cannot drop OT by saving.
         $kept = array_values(array_unique(array_filter(
             array_map('intval', (array) ($_POST['connection_extra_entities_kept'] ?? [])),
-            static fn ($n) => $n >= 0
+            static fn ($n) => $n > 0
         )));
         // Only what was already covered can be kept: a posted id must not be
         // able to add an entity the admin may not add.

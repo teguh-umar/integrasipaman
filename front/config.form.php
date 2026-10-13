@@ -178,11 +178,12 @@ if (isset($_POST['update'])) {
     // one of them an entity the admin has access to.
     $connection_extra = null;
     if (!empty($_POST['connection_extra_entities_shown'])) {
-        $connection_extra = array_values(array_unique(array_filter(
+        $posted = array_values(array_unique(array_filter(
             array_map('intval', (array) ($_POST['connection_extra_entities'] ?? [])),
             static fn ($n) => $n >= 0
         )));
-        foreach ($connection_extra as $extra_entity) {
+        // Only the entities the admin can see are checked and can be changed.
+        foreach ($posted as $extra_entity) {
             if (!Session::haveAccessToEntity($extra_entity)) {
                 Session::addMessageAfterRedirect(
                     __('You do not have access to one of the additional entities.', 'integrasipaman'),
@@ -192,6 +193,18 @@ if (isset($_POST['update'])) {
                 Html::back();
             }
         }
+        // The covered entities this admin cannot see were kept in the form as
+        // hidden fields: they stay covered, and Save does not remove them
+        // (4.0.2). An admin without access to OT cannot drop OT by saving.
+        $kept = array_values(array_unique(array_filter(
+            array_map('intval', (array) ($_POST['connection_extra_entities_kept'] ?? [])),
+            static fn ($n) => $n >= 0
+        )));
+        // Only what was already covered can be kept: a posted id must not be
+        // able to add an entity the admin may not add.
+        $already = $connection === null ? [] : $connection->extraEntities();
+        $kept    = array_values(array_intersect($kept, $already));
+        $connection_extra = array_values(array_unique(array_merge($posted, $kept)));
     }
     $connection_active = array_key_exists('connection_is_active', $_POST)
         ? !empty($_POST['connection_is_active'])

@@ -766,7 +766,7 @@ check(preg_match('/if \(Session::haveAccessToEntity\(\(int\) \$e\[\'id\'\]\)\) \
 check(str_contains($form, "PluginIntegrasipamanConnection::visible(true)[(int) \$posted_connection] ?? null")
       && !str_contains($form, 'PluginIntegrasipamanConnection::current()'),
       'the controller saves the posted connection, and only one the admin may see');
-check(preg_match('/foreach \(\$connection_extra as \$extra_entity\) \{\s*if \(!Session::haveAccessToEntity\(\$extra_entity\)\)/', $form) === 1,
+check(preg_match('/foreach \(\$posted as \$extra_entity\) \{\s*if \(!Session::haveAccessToEntity\(\$extra_entity\)\)/', $form) === 1,
       'it never trusts an additional entity id from the request either');
 check(str_contains($form, "!empty(\$_POST['connection_extra_entities_shown'])"), 'and keeps the additional entities when the field was not on the form');
 check(preg_match("/isset\(\\\$_GET\['select_connection'\]\).*?Html::redirect/s", $form) === 1, 'choosing a connection only records the choice and redirects');
@@ -780,6 +780,20 @@ check(str_contains($config, "getElementById(\"jumpserver_url\")") || str_contain
       'the script reads the URL field as typed');
 check(str_contains($config, 'chip.textContent = typedName !== "" ? typedName : (typedHost !== "" ? typedHost : original);'),
       'and the chip shows the typed Name, else the typed URL host, else the saved label');
+
+// 4.0.2: covered entities the admin cannot see survive a Save
+$cfg_src = (string) file_get_contents("$root/inc/config.class.php");
+$frm_src = (string) file_get_contents("$root/front/config.form.php");
+check(str_contains($cfg_src, "'connection_extra_entities_kept[]'"),
+      'the form keeps the covered entities the admin cannot see, as hidden fields');
+check(preg_match('/if \(!isset\(\$coverable\[\$covered\]\)\)/', $cfg_src) === 1,
+      'only the ones missing from the visible list are kept');
+check(str_contains($frm_src, "array_intersect(\$kept, \$already)"),
+      'a posted "kept" id can only keep an entity that was already covered, never add one');
+check(str_contains($frm_src, 'array_merge($posted, $kept)'),
+      'the saved list is the visible choice plus the kept ones');
+check(preg_match('/foreach \(\$posted as \$extra_entity\) \{\s*if \(!Session::haveAccessToEntity/', $frm_src) === 1,
+      'the access check covers only the visible choice, so a kept entity the admin cannot see does not block Save');
 
 // core restricts the four lists and their forms: the 3.11.0 override is gone
 foreach (['assetmap', 'usermap', 'nodemap', 'platformmap', 'provisioning'] as $class) {

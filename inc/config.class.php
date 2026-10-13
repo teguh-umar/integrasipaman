@@ -526,6 +526,16 @@ class PluginIntegrasipamanConfig extends CommonDBTM
         ]);
         // An emptied multi-select posts nothing; this says the field was on the form.
         echo Html::hidden('connection_extra_entities_shown', ['value' => '1']);
+        // Covered entities this admin cannot see are not in the list above, so
+        // they are not posted by it. Kept here so that Save does not remove them
+        // (4.0.2): only the entities the admin can see can be added or removed.
+        if ($connection !== null) {
+            foreach ($connection->extraEntities() as $covered) {
+                if (!isset($coverable[$covered])) {
+                    echo Html::hidden('connection_extra_entities_kept[]', ['value' => $covered]);
+                }
+            }
+        }
         echo '<small class="form-hint">' . htmlescape(__('Other entities whose Computers are reached through this JumpServer. A record matched to one of their Computers is stored in that entity; an unmatched record stays in the owning entity. "Child entities" applies to these too. An entity with a connection of its own is served by that one.', 'integrasipaman')) . '</small>';
         echo '</div>';
 

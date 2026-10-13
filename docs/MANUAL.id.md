@@ -1,12 +1,15 @@
-> **Catatan untuk salinan di repositori ini.** Manual ini disusun untuk **v3.4.2** dan belum memuat perubahan 4.x:
-> koneksi JumpServer sebagai record per entity (beberapa koneksi, data dipisah per entity, secret terenkripsi),
-> kartu dashboard dengan perubahan terhadap periode sebelumnya dan kartu *Recent Events*,
-> halaman **Session sharing** (4.2.0), serta halaman **Login failures** dan kartu *Login Lockouts* (4.3.x).
-> Untuk 4.x baca [README](../README.md). Nama host, nama pengguna, dan alamat di
-> manual ini sudah diganti dengan contoh.
+> **Catatan untuk salinan di repositori ini.** Manual ini awalnya disusun untuk **v3.4.2**. Salinan ini sudah
+> ditambah perubahan **4.0.0 – 4.4.2**: bagian yang baru ditandai **[4.x]**, dan §4.7, §5.13 – §5.14 serta
+> baris tambahan di §1, §2.1, §9 dan §10 khusus membahasnya. Bagian lain yang tidak ditandai [4.x] ditulis
+> untuk 3.4.2 dan tetap berlaku, kecuali yang dikoreksi di tempatnya (mis. secret kini terenkripsi).
+> Nama host, nama pengguna, dan alamat di manual ini sudah diganti dengan contoh.
+
 # JumpServer Integration Dashboard (`integrasipaman`) — Manual Penggunaan
 
-> Versi didokumentasikan: 3.4.2 (branch `master`, tag `v3.4.2`) · Status VM: **v3.4.2 LIVE di glpi-server**, terverifikasi 2026-09-27 · Terakhir diperbarui: 2026-09-27
+> Versi didokumentasikan: **4.4.2** (bagian 3.4.2 di bawah tetap berlaku) · Terakhir diperbarui salinan ini: 2026-10-13
+>
+> **Yang baru sejak 3.4.2, ringkasnya [4.x]:** (1) **beberapa koneksi JumpServer**, tiap koneksi milik satu entity, data dan tampilan dipisah per entity (§4.7); (2) **aturan risiko, korelasi, dan provisioning per koneksi**, diwariskan ke koneksi di bawahnya atau ke default (§4.7); (3) halaman **Session sharing** (§5.13); (4) halaman **Login failures** dan kartu *Login Lockouts* (§5.14); (5) kartu dashboard dengan perubahan terhadap periode sebelumnya, kartu *Recent Events*, dan kartu yang bisa diklik (§5.8); (6) Access Key Secret dan password DB PBI **terenkripsi** (§4).
+>
 >
 > **Yang paling penting bila Anda upgrade dari 2.7.1.** Dua hal berubah besar sejak versi itu:
 > 1. **Ada hak akses ketiga.** Selain `plugin_integrasipaman_config` (pengaturan) dan `plugin_integrasipaman_report` (laporan, sejak 2.4.0), sekarang ada `plugin_integrasipaman_provisioning` untuk mengirim/menghapus aset di PAMAN. Baca §3.
@@ -30,6 +33,10 @@ Fungsi utama:
 | **Korelasi aset & user** | Mencocokkan string aset JumpServer (`NAMA(IP)`) ke Computer / jaringan produksi GLPI, dan user JumpServer (`Nama(login)`) ke User / Group admin GLPI. Hasil bisa di-*override* manual (dengan batasan — lihat §5.3 dan §10). |
 | **[Baru di 3.0.1] Provisioning Computer → PAMAN, dengan persetujuan manusia** | Antrian di halaman *Asset provisioning*: Computer yang layak dikirim ke PAMAN sebagai Host baru menunggu tombol **Send**; tidak ada lagi pengiriman otomatis saat Computer disimpan. Computer yang keluar status aktif ditandai *pending removal* secara otomatis, tetapi penghapusan aktualnya tetap butuh tombol dan nomor tiket yang sudah disetujui. |
 | **[Baru di 3.3.0–3.4.2] Entitlement PAMAN ("Who has access")** | Cron mingguan menarik daftar *asset permission rule* JumpServer dan mencocokkannya ke Computer GLPI — termasuk mesin yang belum pernah disentuh siapa pun, bukan hanya yang punya riwayat sesi. Ditampilkan sebagai sub-tab di tab JumpServer access pada Computer. |
+| **[4.x] Beberapa koneksi, dipisah per entity** | Satu koneksi JumpServer milik satu entity (opsional beserta entity anak dan entity tambahan). Setiap baris data membawa koneksi dan entity-nya; semua daftar, hitungan, kartu, ekspor, dan tab hanya menampilkan entity yang sedang aktif di session pengguna. Automatic action tidak dibatasi, dan satu JumpServer yang tak terjangkau tidak menghentikan yang lain (§4.7). |
+| **[4.x] Aturan per koneksi** | Daftar kata kunci risiko, admin, prefiks produksi, mode korelasi, dan filter provisioning dimiliki per koneksi: dipegang sendiri, mengikuti koneksi di atasnya, atau mengikuti default semua koneksi (§4.7). |
+| **[4.x] Session sharing** | Halaman yang menjawab siapa yang membagikan sesi, kepada siapa, sesi mana, sampai kapan, dan apakah masih terbuka (§5.13). |
+| **[4.x] Login failures** | Alasan penolakan login beserta akun di baliknya, akun dengan banyak kegagalan, dan akun yang benar-benar terkunci (§5.14). |
 | **Laporan & dashboard** | Halaman *JumpServer PBI Insights* (sektor sidebar sendiri), *Activity Log* dengan ekspor CSV/Excel/Print, 5 kartu dashboard GLPI native, tab *Command Audit Report* dengan ekspor CSV/Excel/Print, **[Baru di 3.2.0]** tab *JumpServer access* di form User (sesi & command per orang). |
 
 Kompatibilitas (dari `setup.php`): GLPI 10.0.0 – 11.99.99, wajib ekstensi PHP cURL.
@@ -42,6 +49,8 @@ Mulai **v2.1.0** plugin ini punya **sektor menu sendiri di sidebar**, sejajar de
 
 > **Setelah upgrade, logout lalu login lagi.** Sidebar GLPI di-*cache* di session dan dibangun saat login, jadi sektor barunya tidak akan muncul di sesi yang sedang berjalan.
 
+> **[4.x] Letak menu berubah sejak 3.9.0.** Plugin ini tidak lagi punya sektor sidebar sendiri. Ia menjadi **satu entri di sektor bersama suite PGN**, bersama plugin suite lainnya, dan halaman-halamannya muncul sebagai **tab horizontal** di bagian atas setiap halaman plugin. Nama entri dan pilihan di bawah tetap sama; yang berubah hanya tempatnya. Setelah upgrade logout lalu login lagi.
+
 ### 2.1 Sektor sidebar **JumpServer Integration**
 
 Sektor ini muncul bila Anda punya **READ pada salah satu** dari tiga hak plugin (§3) — pemegang hanya `plugin_integrasipaman_provisioning` tetap mendapat sektor, isinya hanya entri Asset provisioning.
@@ -50,6 +59,8 @@ Sektor ini muncul bila Anda punya **READ pada salah satu** dari tiga hak plugin 
 |---|---|---|
 | **PBI Insights** | `front/pbi.php` (tab *PBI Insights*) | `plugin_integrasipaman_report` **READ** |
 | **Command Audit Report** | `front/pbi.php?tab=report` | `plugin_integrasipaman_report` READ |
+| **Login failures** [4.x] | `front/loginfailures.php` | `plugin_integrasipaman_report` READ |
+| **Session sharing** [4.x] | `front/sessionsharing.php` | `plugin_integrasipaman_report` READ |
 | **Asset & user correlation** | `front/correlation.php` | `plugin_integrasipaman_config` **UPDATE** |
 | **Asset provisioning** [Baru di 3.0.1] | `front/provisioning.php` | `plugin_integrasipaman_provisioning` READ |
 | **Setup** | `front/config.form.php` | `plugin_integrasipaman_config` READ (menyimpan perlu UPDATE) |
@@ -140,7 +151,9 @@ Rinciannya per halaman:
 
 Buka **Setup → Plugins → JumpServer Integration Dashboard → Configure**. Semua nilai disimpan di tabel konfigurasi core GLPI (`glpi_configs`) dengan context `plugin_integrasipaman`.
 
-> **Keamanan:** Access Key Secret dan PBI DB Password disimpan **tanpa enkripsi** di database GLPI. Jangan menyalin nilainya ke tiket, chat, atau dokumen. Nilai kredensial tidak dicantumkan di manual ini.
+> **Keamanan [4.x]:** sejak 3.10.1, Access Key Secret dan PBI DB Password **disimpan terenkripsi** (kunci GLPI), tidak pernah ditampilkan kembali di halaman, dan tidak tercatat di riwayat konfigurasi. Kolom diisi kosong; kosong saat Save berarti "pertahankan yang tersimpan". Tetap jangan menyalin nilainya ke tiket, chat, atau dokumen. Nilai kredensial tidak dicantumkan di manual ini.
+>
+> **[4.x] Koneksi bukan lagi nilai konfigurasi.** URL, Access Key, Organization ID, Command Storage ID, dan database PBI kini adalah **satu baris koneksi** (§4.7), bukan lagi kunci di `glpi_configs`. Yang masih instalasi-wide: retensi dan backfill bulan, cache daftar node/platform PAMAN, dan penghitung generasi korelasi. Daftar aturan risiko, korelasi, dan provisioning (§4.4 – §4.6) kini per koneksi atau default semua koneksi.
 
 ### 4.1 JumpServer Integration Settings (koneksi API)
 
@@ -226,6 +239,26 @@ Menentukan Computer GLPI mana yang **layak** masuk antrian PAMAN (§5.9). Filter
 
 Node PAMAN (per Computer type) dan platform PAMAN (per Operating System) dipetakan di dua daftar terpisah, dibuka lewat URL langsung (§2.4): `front/nodemap.php` dan `front/platformmap.php` — daftar pencarian GLPI biasa, bisa difilter/diurutkan/diekspor. Baris dengan id sumber 0 adalah baris default: yang dipakai untuk Computer type atau OS yang belum Anda petakan secara eksplisit. Computer yang node/platform-nya belum dipetakan tetap muncul di antrian dengan alasan tertulis dan kotak centang nonaktif — bukan error, hanya belum lengkap.
 
+### 4.7 [Baru di 4.x] Koneksi per entity dan aturan per koneksi
+
+**Beberapa koneksi.** Di tab *Connection* ada daftar chip, satu per koneksi, di atas semua tab. Tiap koneksi punya **Name**, **Active**, **Entity** (pemilik), **Child entities**, dan **Additional entities**. Prinsipnya:
+- **Satu koneksi per entity.** Data yang ditarik lewat koneksi disimpan di entity pemilik, atau di entity Computer yang cocok bila Computer itu berada di cakupan koneksi.
+- **Cakupan** = entity pemilik, ditambah entity tambahan, ditambah turunannya bila *Child entities* menyala, dikurangi entity yang dilayani koneksi yang lebih spesifik. Entity yang berada di bawah entity pemilik **otomatis tercakup**; *Additional entities* hanya untuk entity di cabang lain yang berbagi JumpServer yang sama. Root entity tidak pernah menjadi entity tambahan.
+- **Dibatasi per entity.** Daftar, hitungan, kartu, ekspor, dan tab hanya menampilkan entity yang aktif di session pengguna. Automatic action dan CLI tidak dibatasi.
+- **Koneksi dimatikan (Active = tidak):** tidak menarik data dan tidak melayani entity mana pun; datanya tetap tersimpan.
+- Mengganti entity pemilik **memindahkan semua data koneksi itu** ke entity baru.
+
+**Aturan per koneksi.** Tiga tab aturan, **Risk Rules**, **Correlation**, dan **Provisioning**, kini milik koneksi yang disorot di daftar chip. Di atas tiap tab ada saklar **"<nama koneksi> keeps its own rules on this tab"**:
+- **Mati (default):** koneksi **mengikuti**. Yang diikuti adalah koneksi terdekat di atas entity pemilik yang *Child entities*-nya menyala; kalau tidak ada, **default semua koneksi**. Nilainya tampil abu-abu dan tidak bisa diedit.
+- **Hidup:** koneksi memegang aturannya sendiri untuk tab itu. Koneksi di bawahnya yang mengikuti ikut memakainya.
+- Satu tab dipegang atau diikuti **seluruhnya**, tidak per baris. Mematikan saklar lalu Save mengembalikan koneksi ke mengikuti.
+- **Mengubah aturan satu koneksi hanya mengevaluasi ulang data koneksi itu** (cron 15 menit, atau *Re-evaluate now*).
+- **Upgrade tidak mengubah hasil apa pun:** koneksi yang belum menyimpan apa-apa mengikuti default, dan default itu adalah nilai yang sudah ada di instalasi.
+
+**Default semua koneksi.** Chip **Defaults for all connections** membuka form tanpa tab Connection dan PBI DB, hanya tab aturan dan Terminal Audit. Mengubahnya mengubah semua koneksi yang mengikuti. Perlu hak `plugin_integrasipaman_config` UPDATE **dan** akses ke root entity.
+
+Tab aturan untuk **koneksi baru** menampilkan default dengan abu-abu: simpan koneksinya dulu, baru koneksi itu bisa memegang aturan sendiri.
+
 ---
 
 ## 5. Panduan penggunaan
@@ -306,8 +339,11 @@ Jenis event yang disimpan: aksi *operate-logs* (create/update/…), `user_login_
 ### 5.8 Menambahkan kartu JumpServer ke dashboard GLPI
 
 1. Buka dashboard GLPI yang ingin diedit → mode edit → **Add widget**.
-2. Pilih grup **JumpServer Integration**: *JumpServer Total Events*, *JumpServer Events by Type - Pie*, *JumpServer Events by Type - Bar*, *JumpServer Login Failures*, *JumpServer Session Sharing*.
+2. Pilih grup **JumpServer Integration**: *JumpServer Total Events*, *JumpServer Events by Type - Pie*, *JumpServer Events by Type - Bar*, *JumpServer Login Failures*, *JumpServer Session Sharing*, dan **[4.x]** *JumpServer Login Lockouts* serta *JumpServer Recent Events*. (Tujuh kartu.)
 3. Kartu mendukung filter tanggal native dashboard GLPI.
+4. **[4.x]** Kartu angka (*Total Events*, *Login Failures*, *Login Lockouts*, *Session Sharing*) menampilkan **perubahan terhadap periode sebelumnya yang sama panjang** di judulnya, mis. `▲ 12%`, `▼ 8%`, `= 0%`, atau `▲ new` bila periode sebelumnya nol; tooltip menyebut kedua angkanya. Perubahan hanya tampil bila hitungannya cocok dengan angka di kartu.
+5. **[4.x]** *Login Failures*, *Login Lockouts*, dan *Session Sharing* bisa **diklik** dan membuka halamannya (§5.14, §5.13) dengan periode kartu yang sama. Tile angka di halaman PBI Insights juga tautan. *Recent Events* memuat 10 baris terbaru.
+6. **[4.x]** Semua kartu hanya menghitung entity yang aktif di session pengguna.
 
 ### 5.9 [Diganti total di 3.0.1] Provisioning Computer GLPI → PAMAN
 
@@ -366,6 +402,26 @@ Berbeda dari riwayat sesi (§2.2, sub-tab JumpServer access), sub-tab ini menjaw
 3. Baris ditampilkan per user/grup: *User/group*, *Type* (user atau group — anggota grup tidak diperluas satu-satu, hanya jumlah anggotanya), *Via* (nama rule JumpServer), *Accounts*, *Actions*, *Status* (**Active**, atau **Expired** dengan tanggalnya).
 4. Rule yang "tidak pernah kedaluwarsa" di JumpServer (sentinel tahun 2123) selalu tampil **Active** — lihat §8.3 untuk kenapa nilai itu perlu penanganan khusus.
 5. Di atas tabel ada keterangan **"Collected from JumpServer on …"**. Kalau data belum pernah dikumpulkan sama sekali, atau sudah lebih tua dari dua kali interval cron (14 hari), muncul peringatan kuning sebagai gantinya — jangan baca tabel kosong sebagai "tidak ada yang punya akses" tanpa mengecek peringatan ini dulu.
+
+### 5.13 [Baru di 4.2.0] Session sharing: siapa membagikan sesi, kepada siapa
+
+1. Tab **Session sharing** di bagian atas halaman plugin (hak `plugin_integrasipaman_report` READ).
+2. Satu baris per share: **Shared at** (waktu share dibuat), **Shared by**, **Shared with**, **Session** (aset dan pemilik sesi, atau id sesi bila sesi belum ada di tarikan terminal), **Expires at**, **Status**.
+3. **Shared at** adalah waktu share menurut JumpServer, **bukan** waktu plugin menarik datanya. Bila JumpServer tidak memberi waktu, yang tampil adalah waktu impor dan ditandai `*`.
+4. **Shared with** memuat nama penerima. Share tanpa penerima bernama tampil **"Anyone with the link and code"**: itu share lewat tautan dan kode, bukan share tanpa penerima.
+5. **Status** dihitung dari jam saat halaman dibuka: **Active**, **Expired** (menit berlaku sudah lewat), atau **Revoked** (dinonaktifkan di JumpServer).
+6. Filter **From / To** (pada waktu share), kotak **Search** (pembagi, penerima, aset, id sesi), dan **Export CSV** dengan delapan kolom.
+7. **Kode verifikasi share tidak pernah dibaca, ditampilkan, atau diekspor.**
+8. Batasan: untuk share lewat tautan dan kode, **siapa yang benar-benar bergabung tidak tercatat** di data yang ditarik. Data share ditarik tiap jam dan baru terlihat setelah penarikan berikutnya.
+
+### 5.14 [Baru di 4.3.0] Login failures: kenapa login ditolak, dan akun mana
+
+1. Tab **Login failures** (hak `plugin_integrasipaman_report` READ). Sumbernya login gagal yang ditarik tiap jam.
+2. **Reasons:** setiap alasan penolakan dengan jumlahnya, urut terbanyak. Alasan yang hanya berbeda angkanya digabung (mis. "You have 5 more attempts" dan "4 more" jadi satu baris dengan N). Kolom **Accounts** menyebut akun di balik tiap alasan, urut dari yang paling sering gagal; klik nama akun untuk melihat semua percobaannya, klik teks alasan untuk melihat semua percobaan dengan alasan itu.
+3. **Lockout** = penolakan yang alasannya menyatakan akun **sedang atau sudah terkunci/diblokir**, atau terlalu banyak/terlalu sering mencoba. Peringatan pada salah-password seperti *"the account will be temporarily locked for 10 minutes"* **bukan** lockout. Daftar kata kuncinya `LOCKOUT_WORDS` di `inc/loginfailures.class.php`; tabel Reasons menampilkan semua alasan, jadi lockout dengan kata lain tetap terlihat.
+4. **Accounts with 5 or more failures:** username, jumlah gagal, jumlah alamat IP berbeda, percobaan terakhir, dan tanda lockout. Nama yang hanya berbeda huruf besar-kecil dihitung satu akun; nama dengan dan tanpa domain email dihitung dua.
+5. **Failed logins:** daftar lengkap dengan **waktu percobaan sebenarnya**, username, alamat, kota, dan alasan.
+6. Filter **From / To**, **Search** (username, alamat, alasan), saklar **Lockouts only**, dan **Export CSV** (delapan kolom). Kartu dashboard *Login Lockouts* membuka halaman ini dengan *Lockouts only* menyala.
 
 ---
 
@@ -483,6 +539,10 @@ Batas waktu request web ~490 detik. Backfill besar, run pertama `pull_terminal_a
 | Automatic action ditandai berhasil (*Last run* normal) tetapi datanya jelas tidak berubah | GLPI menandai *Last run* meskipun task tersebut melempar error di tengah jalan. Cek `files/_log/cron.log` untuk baris `Error during <task> execution`, lalu `files/_log/php-errors.log` untuk sebab aslinya. Pertimbangkan mengaktifkan notifikasi error cron bawaan GLPI (Setup → Notifications) supaya kegagalan seperti ini tidak baru diketahui saat seseorang membaca datanya. |
 | Manual override sudah diisi tapi Computer yang ditautkan masih salah | Batasan v3.4.2: form *Asset mappings* tidak punya field untuk memilih Computer, jadi override hanya membekukan vonis Production, tidak bisa mengoreksi Computer yang salah ditautkan (§5.3, §10). Perbaiki datanya di GLPI (mis. IP yang dobel pada dua Computer) supaya resolver menautkan Computer yang benar. |
 | Satu asset string ter-tautkan ke Computer yang salah, padahal namanya cocok dengan Computer lain | Kemungkinan dua Computer GLPI berbagi satu IP — resolver berbasis IP selalu memilih id Computer terkecil, tanpa memeriksa apakah nama asetnya cocok dengan Computer lain (§10). Perbaiki duplikasi IP di GLPI; ini bukan sesuatu yang bisa diatasi dari pengaturan korelasi. |
+| **[4.x]** Tab aturan koneksi abu-abu dan bertuliskan *Following …* | Normal: koneksi itu mengikuti koneksi di atasnya atau default. Nyalakan saklar "keeps its own rules on this tab" untuk mengubahnya; untuk mengubah aturan semua koneksi buka chip **Defaults for all connections** (§4.7). |
+| **[4.x]** Save ditolak: *You do not have access to one of the additional entities* | Terjadi di 4.0.x – 4.4.1 saat daftar *Additional entities* memilih root entity sendiri dan mengirim nilai 0 yang tidak dipilih siapa pun. Diperbaiki di 4.4.2: root tidak lagi ditawarkan dan nilai 0 dibuang; instal 4.4.2 lalu `plugin:install --force` menghapus nilai 0 yang sudah tersimpan di `extra_entities`. |
+| **[4.x]** Hitungan *Login Lockouts* jauh lebih kecil dari *Login Failures* | Wajar: lockout hanya penolakan yang menyatakan akun terkunci. Salah-password biasa membawa peringatan "akan terkunci", yang bukan lockout (§5.14). |
+| **[4.x]** Share baru belum muncul di *Session sharing* | Data share ditarik tiap jam; jalankan *Execute* pada `pull_historical_logs` atau tunggu run berikutnya. Share yang dibuat sebelum plugin pertama kali menarik tetap muncul karena API share tidak punya filter tanggal. |
 | Sub-tab **Who has access** menunjukkan peringatan basi ("may be out of date") | Cron `entitlement_pull` belum jalan dalam 14 hari terakhir untuk Computer itu, atau belum pernah sama sekali. Cek Setup → Automatic actions untuk task `entitlement_pull`, dan lihat §10 untuk batas ukuran estate yang bisa ditangani satu run. |
 
 ---
@@ -490,7 +550,9 @@ Batas waktu request web ~490 detik. Backfill besar, run pertama `pull_terminal_a
 ## 10. Status & batasan
 
 **Status versi**
-- **LIVE di glpi-server: v3.4.2**, diverifikasi di produksi 2026-09-27 — entitlement ("Who has access") tampil di layar untuk Computer yang belum punya riwayat sesi sama sekali, yang di v3.4.1 masih tersembunyi walau datanya sudah ada di database. v3.4.1 sebelumnya menutup celah tahun-2123 (JumpServer menulis 2123 untuk "tidak pernah kedaluwarsa"; TIMESTAMP mentok 2038, sehingga cron `entitlement_pull` mati di baris pertama sebelum v3.4.1 — lihat §8.3). v3.4.0 sempat dibangun untuk masalah yang sama dengan melebarkan kolom ke DATETIME dan **ditarik/dihapus sebelum dideploy** karena itu bertentangan dengan cara GLPI 11 menangani kolom DATETIME pada tabel plugin. v3.3.0 adalah rilis pertama fitur entitlement (dua tabel baru, cron mingguan) — sempat live dengan entitlement **rusak diam-diam di produksi** akibat celah 2038 di atas, sebelum v3.4.x memperbaikinya.
+- **[4.x] 4.4.2 terpasang dan lolos checklist produksi (2026-10-13).** Urutan: 4.0.0 (data dipisah per entity, beberapa koneksi), 4.0.1 dan 4.0.2 (perbaikan form koneksi), 4.1.0 (kartu dashboard), 4.2.0 (Session sharing), 4.3.0 dan 4.3.1 (Login failures, kartu Login Lockouts, kartu bisa diklik), 4.4.0 (aturan per koneksi), 4.4.1 dan 4.4.2 (perbaikan Save pada Additional entities). Migrasi 3.x ke 4.x: ambil backup database dulu, karena 4.0.0 mengubah kunci unik di tujuh tabel dan menentukan ulang entity data yang tersimpan; pakai `plugin:install --force`, `plugin:activate`, lalu `cache:clear`.
+- **[4.x] Belum dibangun:** snapshot nama dan entity Computer pada baris tautan (asset map, provisioning, asset permission) ketika Computer pindah entity; ditunda sampai ada koneksi kedua atau Transfer dipakai. Siapa yang benar-benar bergabung pada share lewat tautan juga belum tersedia.
+- **LIVE di glpi-server: v3.4.2** (bagian di bawah ini disusun saat itu), diverifikasi di produksi 2026-09-27 — entitlement ("Who has access") tampil di layar untuk Computer yang belum punya riwayat sesi sama sekali, yang di v3.4.1 masih tersembunyi walau datanya sudah ada di database. v3.4.1 sebelumnya menutup celah tahun-2123 (JumpServer menulis 2123 untuk "tidak pernah kedaluwarsa"; TIMESTAMP mentok 2038, sehingga cron `entitlement_pull` mati di baris pertama sebelum v3.4.1 — lihat §8.3). v3.4.0 sempat dibangun untuk masalah yang sama dengan melebarkan kolom ke DATETIME dan **ditarik/dihapus sebelum dideploy** karena itu bertentangan dengan cara GLPI 11 menangani kolom DATETIME pada tabel plugin. v3.3.0 adalah rilis pertama fitur entitlement (dua tabel baru, cron mingguan) — sempat live dengan entitlement **rusak diam-diam di produksi** akibat celah 2038 di atas, sebelum v3.4.x memperbaikinya.
 - **v3.0.1** (24-09) menghapus sinkronisasi Computer→JumpServer lama dan menggantinya provisioning PAMAN bertiket-manusia (§5.9), memindahkan dua tab Computer plugin ini ke dalam tab bersama **PGN Suite** (§2.2), dan menambah hak `plugin_integrasipaman_provisioning`. **v3.0.0** dan **v3.1.0** digabung dan ditutup — isinya terbawa ke v3.0.1, jangan dipasang keduanya (seeding hak provisioning-nya salah — lihat catatan di bawah).
 - **v3.2.0** (24-09) menambah tab **JumpServer access** pada form User (§2.3, §5.11) dan memperbaiki dua kolom skema yang membuat Setup → General menampilkan peringatan (§8.3); diverifikasi di data nyata di VM.
 - Sebelum v3.0.1: **v2.7.1** (23-09) sempat LIVE — menambahkan kotak pencarian dan pemilih kolom pada tabel high-risk. v2.6.0, v2.6.1, v2.5.0, v2.4.0, v2.3.0, dan v2.1.0 juga sempat LIVE sebelum digantikan versi berikutnya; v2.0.0, v2.0.1, v2.2.0, v2.2.1 dibangun tapi tidak pernah dideploy.
@@ -514,7 +576,7 @@ Batas waktu request web ~490 detik. Backfill besar, run pertama `pull_terminal_a
 **Batasan yang diketahui**
 - **Manual override pada Asset mappings tidak bisa mengoreksi Computer yang salah ditautkan, hanya membekukan vonis Production** (§5.3) — batasan v3.4.2, dijadwalkan diperbaiki v3.5.0 (§ di atas), belum dideploy.
 - **Dua Computer GLPI yang berbagi satu alamat IP bisa membuat aset ter-tautkan ke Computer yang salah** — resolver berbasis IP selalu memilih id Computer terkecil dan tidak memeriksa apakah nama asetnya cocok dengan Computer lain (§9). Perbaikannya adalah membersihkan duplikasi IP di GLPI, bukan mengganti mode pencocokan korelasi — mode "Computer name only" hanya membantu bila nama di JumpServer dan di GLPI konsisten, dan pada instance ini keduanya sering berbeda secara sistematis.
-- Access Key Secret dan password DB PBI disimpan tanpa enkripsi di `glpi_configs` (enkripsi ditunda).
+- ~~Access Key Secret dan password DB PBI disimpan tanpa enkripsi~~ **[Dikoreksi di 3.10.1]** keduanya kini terenkripsi (§4).
 - Cron `pull_terminal_activity` tidak dapat menandai "gagal" pada gangguan JumpServer total (residual yang diketahui, self-healing di run berikutnya).
 - Session-sharings tidak punya filter tanggal di API JumpServer, sehingga setiap run jam-an menarik ulang seluruh daftar (dedup mencegah duplikat).
 - Isi output command tidak disimpan; teks command panjang dipotong di batas kolom.

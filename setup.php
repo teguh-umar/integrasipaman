@@ -23,7 +23,7 @@
 // row in glpi_plugins. Confirmed by comparison against a working
 // reference plugin on the target instance, which has no such guard.
 
-define('PLUGIN_INTEGRASIPAMAN_VERSION', '4.4.0');
+define('PLUGIN_INTEGRASIPAMAN_VERSION', '4.4.1');
 
 // Minimum GLPI version, inclusive
 define('PLUGIN_INTEGRASIPAMAN_MIN_GLPI', '10.0.0');

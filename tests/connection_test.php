@@ -766,8 +766,9 @@ check(preg_match('/if \(Session::haveAccessToEntity\(\(int\) \$e\[\'id\'\]\)\) \
 check(str_contains($form, "PluginIntegrasipamanConnection::visible(true)[(int) \$posted_connection] ?? null")
       && !str_contains($form, 'PluginIntegrasipamanConnection::current()'),
       'the controller saves the posted connection, and only one the admin may see');
-check(preg_match('/foreach \(\$posted as \$extra_entity\) \{\s*if \(!Session::haveAccessToEntity\(\$extra_entity\)\)/', $form) === 1,
-      'it never trusts an additional entity id from the request either');
+// 4.4.1: only a CHANGE needs access; an entity already covered is not added by this POST.
+check(preg_match('/foreach \(\$posted as \$extra_entity\) \{\s*if \(!in_array\(\$extra_entity, \$already, true\) && !Session::haveAccessToEntity\(\$extra_entity\)\)/', $form) === 1,
+      'it never trusts an ADDED additional entity id from the request either');
 check(str_contains($form, "!empty(\$_POST['connection_extra_entities_shown'])"), 'and keeps the additional entities when the field was not on the form');
 check(preg_match("/isset\(\\\$_GET\['select_connection'\]\).*?Html::redirect/s", $form) === 1, 'choosing a connection only records the choice and redirects');
 check(str_contains((string) file_get_contents("$root/inc/serverlabel.class.php"), 'PluginIntegrasipamanConnection::current() ?? PluginIntegrasipamanConnection::forActiveEntity()'),
@@ -792,8 +793,10 @@ check(str_contains($frm_src, "array_intersect(\$kept, \$already)"),
       'a posted "kept" id can only keep an entity that was already covered, never add one');
 check(str_contains($frm_src, 'array_merge($posted, $kept)'),
       'the saved list is the visible choice plus the kept ones');
-check(preg_match('/foreach \(\$posted as \$extra_entity\) \{\s*if \(!Session::haveAccessToEntity/', $frm_src) === 1,
-      'the access check covers only the visible choice, so a kept entity the admin cannot see does not block Save');
+check(preg_match('/foreach \(\$posted as \$extra_entity\) \{\s*if \(!in_array\(\$extra_entity, \$already, true\) && !Session::haveAccessToEntity/', $frm_src) === 1,
+      'the access check covers only what is ADDED, so a covered entity the admin cannot see does not block Save even when the form posts it back (4.4.1: ICT + OT on production)');
+check(preg_match('/\$e !== 0 \|\| Session::haveAccessToEntity\(0\)/', $frm_src) === 1,
+      'and a root entity posted by an admin who cannot see the root is dropped, not an error: the list never offers it');
 
 // core restricts the four lists and their forms: the 3.11.0 override is gone
 foreach (['assetmap', 'usermap', 'nodemap', 'platformmap', 'provisioning'] as $class) {

@@ -176,7 +176,7 @@ class PluginIntegrasipamanProfile extends Profile
     /**
      * Install/upgrade seeding.
      *
-     * plugin:install --force (the only reliable upgrade path on GLPI-SERVER)
+     * plugin:install --force (the only reliable upgrade path on glpi-server)
      * re-runs the install hook on every upgrade, so this must not clobber
      * what an admin set in the rights matrix. Two rules, from the suite
      * contract:

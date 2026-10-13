@@ -441,7 +441,7 @@ $C::resolveAll(0.0000001);
 check($db->updates === [], "past deadline -> row loop breaks before any write");
 
 // --- hybrid_name: match the Computer by NAME before falling back to the IP ---
-// The production case this exists for (GLPI-SERVER, 2026-09-23): two Computers
+// The production case this exists for (glpi-server, 2026-09-23): two Computers
 // carry 10.0.0.207. IP-first takes the lowest id and attributes the asset
 // VM-IPA-REPL-01 to the Computer vm-wm-tc-01, so one server's PAM access
 // history is filed under another. Name-first stops at the Computer that

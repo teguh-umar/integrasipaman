@@ -773,6 +773,14 @@ check(preg_match("/isset\(\\\$_GET\['select_connection'\]\).*?Html::redirect/s",
 check(str_contains((string) file_get_contents("$root/inc/serverlabel.class.php"), 'PluginIntegrasipamanConnection::current() ?? PluginIntegrasipamanConnection::forActiveEntity()'),
       'a screen names the JumpServer of the connection serving the viewer\'s entity');
 
+// the chip follows the form (4.0.0 fix): only the edited connection's label, updated from the URL and Name fields
+check(str_contains($config, 'data-live-chip="1"') && str_contains($config, 'DOMContentLoaded'),
+      'the edited connection chip is marked and its script waits for the page');
+check(str_contains($config, "getElementById(\"jumpserver_url\")") || str_contains($config, 'getElementById("jumpserver_url")'),
+      'the script reads the URL field as typed');
+check(str_contains($config, 'chip.textContent = typedName !== "" ? typedName : (typedHost !== "" ? typedHost : original);'),
+      'and the chip shows the typed Name, else the typed URL host, else the saved label');
+
 // core restricts the four lists and their forms: the 3.11.0 override is gone
 foreach (['assetmap', 'usermap', 'nodemap', 'platformmap', 'provisioning'] as $class) {
     check(!str_contains($src("inc/$class.class.php"), 'function isEntityAssign'),

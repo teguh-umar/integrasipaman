@@ -423,7 +423,13 @@ class PluginIntegrasipamanConfig extends CommonDBTM
             $is_edited = !$connection_is_new && $connection !== null && $listed->id() === $connection->id();
             echo '<a class="btn btn-sm ' . ($is_edited ? 'btn-primary' : 'btn-outline-secondary') . '" href="'
                 . htmlescape($select_url . $listed->id()) . '">'
-                . '<i class="ti ti-plug-connected me-1"></i>' . htmlescape($listed->label())
+                . '<i class="ti ti-plug-connected me-1"></i>'
+                // The edited connection's label is updated as the form changes
+                // (see the script below). It shows the typed URL's host, or the
+                // typed Name; nothing is saved by it.
+                . ($is_edited
+                    ? '<span data-live-chip="1">' . htmlescape($listed->label()) . '</span>'
+                    : htmlescape($listed->label()))
                 . ' <span class="opacity-75">- ' . htmlescape((string) Dropdown::getDropdownName('glpi_entities', $listed->entity())) . '</span>'
                 . ($listed->isActive() ? '' : ' <span class="badge bg-secondary ms-1">' . htmlescape(__('off', 'integrasipaman')) . '</span>')
                 . '</a>';
@@ -434,6 +440,30 @@ class PluginIntegrasipamanConfig extends CommonDBTM
                 . '<i class="ti ti-plus me-1"></i>' . htmlescape(__('Add a connection', 'integrasipaman')) . '</a>';
         }
         echo '</div>';
+        // The chip is a preview of what is in the form, not of what is saved:
+        // the host of the URL typed in the form, or the Name if one is typed.
+        // The chip shows the saved value until the form changes, and Save is
+        // what stores it. Only the displayed text moves.
+        echo '<script>document.addEventListener("DOMContentLoaded", function () {'
+            . 'var chip = document.querySelector("[data-live-chip]");'
+            . 'if (!chip) { return; }'
+            . 'var original = chip.textContent;'
+            . 'var url = document.getElementById("jumpserver_url");'
+            . 'var name = document.getElementById("connection_name");'
+            . 'function host(v) {'
+            . '  v = (v || "").trim();'
+            . '  if (v === "") { return ""; }'
+            . '  try { return new URL(v.indexOf("://") === -1 ? "https://" + v : v).hostname.replace(/\.$/, ""); }'
+            . '  catch (e) { return v; }'
+            . '}'
+            . 'function refresh() {'
+            . '  var typedName = name ? name.value.trim() : "";'
+            . '  var typedHost = url ? host(url.value) : "";'
+            . '  chip.textContent = typedName !== "" ? typedName : (typedHost !== "" ? typedHost : original);'
+            . '}'
+            . 'if (url) { url.addEventListener("input", refresh); }'
+            . 'if (name) { name.addEventListener("input", refresh); }'
+            . '});</script>';
         echo '<small class="form-hint">' . htmlescape(
             $connection_is_new
                 ? __('New connection. Each entity can have one JumpServer of its own; fill in this tab and Save.', 'integrasipaman')

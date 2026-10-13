@@ -104,8 +104,11 @@ class PluginIntegrasipamanLoginFailures
     /** Whether a reason text means "refused because of too many / too fast attempts". */
     public static function isLockout(string $reason): bool
     {
-        $reason = mb_strtolower($reason);
-        if ($reason === '') {
+        // "(the account will be temporarily locked for 10 minutes)" is the warning that
+        // rides on every wrong-password message, not a lockout. Only a refusal that says
+        // the account IS or HAS BEEN locked counts.
+        $reason = preg_replace('/will be (temporarily )?(locked|blocked)/', '', mb_strtolower($reason)) ?? '';
+        if (trim($reason) === '') {
             return false;
         }
         foreach (self::LOCKOUT_WORDS as $word) {
@@ -156,6 +159,7 @@ class PluginIntegrasipamanLoginFailures
         $to   = self::dayEnd($filters['to'] ?? '');
         $q    = mb_strtolower(trim((string) ($filters['q'] ?? '')));
         $only = ($filters['only'] ?? '') === 'locked';
+        $reason_key = isset($filters['reason']) && $filters['reason'] !== '' ? self::reasonKey((string) $filters['reason']) : null;
 
         $out = [];
         foreach ($DB->request([
@@ -171,6 +175,9 @@ class PluginIntegrasipamanLoginFailures
                 continue;
             }
             if ($only && !$item['locked']) {
+                continue;
+            }
+            if ($reason_key !== null && self::reasonKey($item['reason']) !== $reason_key) {
                 continue;
             }
             if ($q !== '' && !str_contains(mb_strtolower(implode(' ', [$item['username'], $item['ip'], $item['city'], $item['reason']])), $q)) {
@@ -195,16 +202,35 @@ class PluginIntegrasipamanLoginFailures
     {
         $groups = [];
         foreach ($items as $item) {
-            $key = mb_strtolower($item['reason']);
+            $key = self::reasonKey($item['reason']);
             if (!isset($groups[$key])) {
-                $groups[$key] = ['reason' => $item['reason'], 'count' => 0, 'locked' => $item['locked']];
+                $groups[$key] = ['reason' => preg_replace('/\d+/', 'N', $item['reason']) ?? $item['reason'], 'key' => $key, 'count' => 0, 'locked' => $item['locked'], 'who' => []];
             }
             $groups[$key]['count']++;
+            if ($item['username'] !== '') {
+                $u = mb_strtolower($item['username']);
+                $groups[$key]['who'][$u] = ['username' => $groups[$key]['who'][$u]['username'] ?? $item['username'], 'count' => ($groups[$key]['who'][$u]['count'] ?? 0) + 1];
+            }
         }
-        $list = array_values($groups);
+        $list = [];
+        foreach ($groups as $g) {
+            $who = array_values($g['who']);
+            usort($who, static fn (array $a, array $b): int => $b['count'] <=> $a['count']);
+            $g['who'] = $who;
+            $list[]   = $g;
+        }
         usort($list, static fn (array $a, array $b): int => $b['count'] <=> $a['count']);
 
         return $list;
+    }
+
+    /**
+     * What makes two reasons "the same": the text without its numbers, so "You have 5
+     * more attempts" and "You have 4 more attempts" are one reason, not five.
+     */
+    public static function reasonKey(string $reason): string
+    {
+        return mb_strtolower(preg_replace('/\d+/', 'N', trim($reason)) ?? '');
     }
 
     /**

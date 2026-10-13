@@ -62,6 +62,23 @@ foreach (['Username/password check failed', 'MFA failed', 'Username does not exi
 foreach (['User is blocked', 'Account locked', 'Too many failed attempts', 'Log in frequently and try again later', 'Limit exceeded'] as $lock) {
     check($L::describe(failure('a', $lock, '2026/10/10 07:00:00'))['locked'] === true, "\"$lock\" is a lockout");
 }
+// The wording found on production (2026-10-13). Every wrong-password message carries a
+// warning that the account WILL be locked; counting it called 261 of 312 failures lockouts.
+foreach ([
+    'The username or password you entered is incorrect, please try again. You have 5 more attempt(s) (the account will be temporarily locked for 10 minutes)',
+    'The username or password you entered is incorrect, please enter it again. You can also try 5 times (The account will be temporar',
+    'OTP code invalid, or server time error You can also try 4 times (The account will be temporarily locked for 10 minutes)',
+    'Invalid virtual MFA verification code, or the server time is incorrect You can also try 4 times (The account will be temporarily locked for 10 minutes)',
+    'Username does not exist',
+] as $warn) {
+    check($L::isLockout($warn) === false, 'a warning of a coming lock is not a lockout: ' . substr($warn, 0, 50));
+}
+foreach ([
+    'The account has been locked (contact the administrator to unlock it or try again after 10 minutes)',
+    'The account has been locked (please contact admin to unlock it or try again after 10 minutes)',
+] as $real) {
+    check($L::isLockout($real) === true, 'an account that has been locked is a lockout: ' . substr($real, 0, 40));
+}
 check($L::isLockout('') === false, 'no reason is not a lockout');
 check($L::isLockout('BLOCKED') === true, 'the match ignores case');
 
@@ -105,6 +122,22 @@ $items = $L::find([]);
 $by = $L::byReason($items);
 check($by[0]['reason'] === 'Username/password check failed' && $by[0]['count'] === 2 && $by[0]['locked'] === false, 'reasons are counted, most frequent first');
 check($by[1]['reason'] === 'User is blocked' && $by[1]['locked'] === true, 'and a lockout is marked');
+
+// --- reasons that differ only by a number are one reason, with the accounts behind it ---
+$DB->logs = [
+    failure('ani', 'Wrong password. You have 5 more attempt(s)', '2026/10/10 07:00:00'),
+    failure('ani', 'Wrong password. You have 4 more attempt(s)', '2026/10/10 07:01:00'),
+    failure('Budi', 'Wrong password. You have 4 more attempt(s)', '2026/10/10 07:02:00'),
+    failure('cici', 'The account has been locked', '2026/10/10 07:03:00'),
+];
+$g = $L::byReason($L::find([]));
+check(count($g) === 2 && $g[0]['count'] === 3 && $g[0]['reason'] === 'Wrong password. You have N more attempt(s)',
+      'five remaining attempts and four are one reason, shown with N for the number');
+check($g[0]['who'][0] === ['username' => 'ani', 'count' => 2] && $g[0]['who'][1] === ['username' => 'Budi', 'count' => 1],
+      'and it says who: the accounts, most failures first, with their counts');
+check($g[1]['who'] === [['username' => 'cici', 'count' => 1]] && $g[1]['locked'] === true, 'a lockout names its account');
+check(count($L::find(['reason' => 'Wrong password. You have 9 more attempt(s)'])) === 3, 'choosing a reason lists its attempts, whatever the number');
+check(count($L::find(['reason' => 'The account has been locked'])) === 1, 'and another reason lists only its own');
 
 $many = [];
 for ($i = 0; $i < 4; $i++) { $many[] = failure('svc.shared', 'Username/password check failed', '2026/10/1' . $i . ' 07:00:00', '10.0.0.' . $i); }

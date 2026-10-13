@@ -79,8 +79,8 @@ check(!method_exists($M, 'getMenuContent'),
       'the old sector getMenuContent() is gone - nothing registers this class as a sector');
 
 $options = $entry['options'] ?? [];
-check(array_keys($options) === ['insights', 'report', 'setup'],
-      'read-only user gets insights / report / setup, in that order');
+check(array_keys($options) === ['insights', 'report', 'sessionsharing', 'setup'],
+      'read-only user gets insights / report / sessionsharing / setup, in that order');
 check(!isset($options['activity']),
       'Activity Log is not a menu option - front/export.php renders no GLPI chrome');
 check(!isset($options['correlation']),
@@ -107,14 +107,16 @@ foreach ($options as $key => $option) {
 // this same $options_rw.
 grant(READ | UPDATE, READ, READ);
 $options_rw = $M::entry()['options'];
-check(array_keys($options_rw) === ['insights', 'report', 'correlation', 'provisioning', 'setup'],
-      'full rights -> the five pages, in the order the old sector listed them');
+check(array_keys($options_rw) === ['insights', 'report', 'sessionsharing', 'correlation', 'provisioning', 'setup'],
+      'full rights -> the six pages: the old five, with session sharing after the report');
 check($options_rw['correlation']['page'] === $BASE . '/correlation.php',
       'correlation points at its own controller');
 check($options_rw['report']['page'] === $BASE . '/pbi.php?tab=report',
       'the report option carries the tab that front/pbi.php reads');
 check($options_rw['provisioning']['page'] === $BASE . '/provisioning.php',
       'provisioning points at its own controller');
+check($options_rw['sessionsharing']['page'] === $BASE . '/sessionsharing.php',
+      'session sharing points at its own controller, behind the report right');
 
 // --- provisioning-only: neither config nor report, just the queue -----------
 // The whole reason canView() also checks RIGHT_PROVISIONING: a person who
@@ -136,8 +138,8 @@ check($M::entry() === null, 'no right at all -> entry hidden');
 grant(0, READ);
 $entry = $M::entry();
 check(is_array($entry), 'reports-only -> entry still returned');
-check(array_keys($entry['options']) === ['insights', 'report'],
-      'reports-only sees insights + report, and not Setup / correlation / provisioning');
+check(array_keys($entry['options']) === ['insights', 'report', 'sessionsharing'],
+      'reports-only sees insights + report + session sharing, and not Setup / correlation / provisioning');
 
 // --- config-only: settings without the audit detail -------------------------
 grant(READ, 0);
@@ -186,8 +188,8 @@ foreach (glob($front . '/*.php') as $file) {
     check(preg_match("/Html::header\([^;]*''\s*,\s*'integrasipaman'\s*,/", $src) === 0,
           "$name: no header left in the old 'integrasipaman' sector");
 }
-check(count($used) > 0 && array_sum(array_map('count', $used)) === 14,
-      'all 14 chrome-rendering front controllers were found');
+check(count($used) > 0 && array_sum(array_map('count', $used)) === 15,
+      'all 15 chrome-rendering front controllers were found');
 foreach ($used as $key => $files) {
     if ($key === '$tab') {
         continue;

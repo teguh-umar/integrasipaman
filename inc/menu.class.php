@@ -101,6 +101,13 @@ class PluginIntegrasipamanMenu extends CommonGLPI
                 'icon'  => 'ti ti-file-analytics',
                 'links' => ['search' => $report],
             ];
+            // 4.2.0: who shared a session, with whom. Same right as the report.
+            $options['sessionsharing'] = [
+                'title' => __('Session sharing', 'integrasipaman'),
+                'page'  => self::BASE . '/sessionsharing.php',
+                'icon'  => 'ti ti-share',
+                'links' => ['search' => self::BASE . '/sessionsharing.php'],
+            ];
         }
 
         // front/export.php (Activity Log) is deliberately NOT a menu option.

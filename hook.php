@@ -1084,7 +1084,7 @@ function plugin_integrasipaman_install(): bool
         'name'           => "VARCHAR(191) NOT NULL DEFAULT ''",
         'extra_entities' => "VARCHAR(255) NOT NULL DEFAULT ''",
         'last_logs_pull' => 'TIMESTAMP NULL DEFAULT NULL',
-        // v4.5.0: when this connection's session-join history was pulled in
+        // v4.5.1: when this connection's session-join history was pulled in
         // full. The hourly pull only looks forward from `last_logs_pull`, and
         // a connection added later inherits the cron task's `lastrun`, so
         // without this every join older than the moment it was configured
@@ -1105,7 +1105,7 @@ function plugin_integrasipaman_install(): bool
         }
     }
 
-    // v4.5.0: the provisioning cron's description said "PAMAN" while the other
+    // v4.5.1: the provisioning cron's description said "PAMAN" while the other
     // four said "JumpServer". CronTask::Register() writes `comment` only when
     // it creates the row, so an instance that installed earlier keeps the old
     // word on Setup > Automatic actions forever. Rewrite it in place.
@@ -1120,7 +1120,7 @@ function plugin_integrasipaman_install(): bool
             AND `comment` LIKE '%PAMAN%'"
     );
 
-    // v4.5.0: a connection that already holds session_join rows was back-filled
+    // v4.5.1: a connection that already holds session_join rows was back-filled
     // by hand (the 4.5.0 page), so mark it done rather than making the next
     // cron re-fetch a history it already has. Dedup would make the re-fetch
     // harmless but not free, and "harmless but pointless" is how a pull that

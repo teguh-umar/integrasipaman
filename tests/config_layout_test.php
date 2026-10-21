@@ -102,7 +102,7 @@ $guard_at = strrpos(substr($config_src, 0, $link_at), '$defaults_mode');
 check($guard_at !== false && ($link_at - $guard_at) < 400,
       'and it is hidden while editing defaults, where there is no one connection to back-fill');
 
-// v4.5.0: the TERMINAL back-fill gets a way in as well. It had been URL-only
+// v4.5.1: the TERMINAL back-fill gets a way in as well. It had been URL-only
 // since it was written, which is how the session-join one came to be built
 // the same way without anyone noticing.
 check(str_contains($config_src, 'front/backfill.php'),

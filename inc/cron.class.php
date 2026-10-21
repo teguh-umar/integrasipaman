@@ -77,8 +77,22 @@ class PluginIntegrasipamanCron extends CommonDBTM
                 ];
 
             case 'provisioning_scan':
+                // v4.5.1: a plain word, not the URL-derived label.
+                //
+                // A cron task is ONE row for the whole installation, while the
+                // label is derived from whichever connection the reader is
+                // currently working in. So this one row read "PAMAN" to an
+                // admin in the ICT entity and "JumpServer" to the same task
+                // running from the CLI with no active entity - the same record
+                // describing itself differently depending on who looked at it,
+                // and wrong outright once a second connection exists.
+                //
+                // This was the only global string taking the derived label.
+                // Every per-connection screen keeps it: the label feature is
+                // not being retired (v3.10.0, the user's decision), it just
+                // has no business naming an installation-wide task.
                 return [
-                    'description' => PluginIntegrasipamanServerLabel::in('Refresh the {server} provisioning queue: eligibility, drift, and assets marked for removal'),
+                    'description' => 'Refresh the JumpServer provisioning queue: eligibility, drift, and assets marked for removal',
                 ];
         }
 
@@ -276,7 +290,7 @@ class PluginIntegrasipamanCron extends CommonDBTM
             $total_skipped  += $skipped;
         }
 
-        // --- Session joins: the one-time history (v4.5.0) --------------------
+        // --- Session joins: the one-time history (v4.5.1) --------------------
         // A connection that has never been back-filled gets its full join
         // history here, once, automatically. Without it the windowed pull
         // below only ever looks forward from the cursor - and a connection

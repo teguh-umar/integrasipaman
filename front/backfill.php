@@ -53,7 +53,7 @@ echo '<p><a href="' . htmlescape(Plugin::getWebDir('integrasipaman')) . '/front/
 
 echo '<div class="card"><div class="card-body">';
 
-// v4.5.0: a month picker. This page took the month only as a hand-typed
+// v4.5.1: a month picker. This page took the month only as a hand-typed
 // `?month=YYYY-MM`, so it was usable solely by whoever had the deploy
 // document open - a tool nobody could find and nobody could drive.
 // Rendered on every branch, so after a run the next month is one click away.

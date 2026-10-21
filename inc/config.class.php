@@ -659,7 +659,7 @@ class PluginIntegrasipamanConfig extends CommonDBTM
         // --- Terminal command audit ----------------------------------------
         // The first pane is the one shown on load: the connection's, or here the
         // first the form has.
-        // v4.5.0: the terminal back-fill gets a way in too. It had been
+        // v4.5.1: the terminal back-fill gets a way in too. It had been
         // reachable only by typing its URL since it was written, which is why
         // the session-join one was built the same way without anyone noticing.
         $terminal_backfill = $defaults_mode ? '' :

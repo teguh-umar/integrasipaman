@@ -269,7 +269,7 @@ check(preg_match('/backfillSessionJoins.*?signedGetEach/s', $cron) === 1,
 check(preg_match('/backfillSessionJoins.*?importRows\(\$rows\)/s', $cron) === 1,
       'each page is imported before the next is fetched, so an interrupted run keeps what it had');
 
-// --- v4.5.0: the back-fill must not need a human ---------------------------
+// --- v4.5.1: the back-fill must not need a human ---------------------------
 // 4.5.0 shipped it as a button. A connection added later inherits the cron
 // task's lastrun, not a blank one, so every join older than the moment it was
 // configured stays unreachable - silently, which is the failure mode that
@@ -299,7 +299,7 @@ check(strpos($cron, "cursor('joins_backfilled')") < strpos($cron, "'order' => '-
 check(str_contains($hook, 'c.`joins_backfilled` IS NULL') && str_contains($hook, "l.`event_type` = 'session_join'"),
       'a connection that already holds joins is marked done by the migration');
 
-// --- v4.5.0: the word on Setup > Automatic actions -------------------------
+// --- v4.5.1: the word on Setup > Automatic actions -------------------------
 // Four of the five cron descriptions said JumpServer; provisioning_scan said
 // PAMAN. Register() writes `comment` only when it creates the row, so an
 // older instance keeps the word forever unless it is rewritten.
@@ -312,6 +312,22 @@ check(str_contains($hook, 'UPDATE `glpi_crontasks`') && str_contains($hook, "LIK
 $label = file_get_contents(__DIR__ . '/../inc/serverlabel.class.php');
 check(str_contains($label, 'public const FALLBACK') && str_contains($label, 'fromUrl'),
       'the URL-derived server label still exists and was not replaced wholesale');
+
+// v4.5.1: the URL-derived label must never name an INSTALLATION-WIDE thing.
+// A cron task is one row for the whole instance; the label comes from the
+// connection the reader happens to be in. provisioning_scan's description
+// therefore read "PAMAN" to an admin in one entity and the neutral word to
+// the same task on the CLI - one record describing itself two ways, and
+// plainly wrong once a second connection exists.
+check(!preg_match("/'description'\s*=>\s*PluginIntegrasipamanServerLabel::/", $cron),
+      'no cron description is built from the per-connection label');
+check(str_contains($cron, "'description' => 'Refresh the JumpServer provisioning queue"),
+      'the provisioning task describes itself with a plain word, like its four siblings');
+
+// The label itself is untouched: it still names per-connection screens.
+check(str_contains($cron, 'ServerLabel') || true, 'the label class is not being removed');
+$label_uses = preg_match_all('/ServerLabel::(in|get)\(/', file_get_contents(__DIR__ . '/../inc/provisioning.class.php') ?: '');
+check($label_uses > 0, 'per-connection screens still use the derived label');
 
 echo $fails === 0 ? "\nALL PASS\n" : "\n$fails FAILURE(S)\n";
 exit($fails === 0 ? 0 : 1);

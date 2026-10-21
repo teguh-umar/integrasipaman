@@ -276,6 +276,43 @@ class PluginIntegrasipamanCron extends CommonDBTM
             $total_skipped  += $skipped;
         }
 
+        // --- Session joins: the one-time history (v4.5.0) --------------------
+        // A connection that has never been back-filled gets its full join
+        // history here, once, automatically. Without it the windowed pull
+        // below only ever looks forward from the cursor - and a connection
+        // added later inherits the cron task's `lastrun`, not a blank one, so
+        // everything older than the moment it was configured would be
+        // unreachable with nothing on any screen saying so. That silence is
+        // what made the 4.5.0 card read zero for weeks.
+        //
+        // Runs before the windowed pull so the cursor it sets cannot hide
+        // anything, and marks itself done only on a complete fetch: a run cut
+        // short by a page failure leaves the marker NULL and is retried on the
+        // next pull rather than reported as history anyone can rely on.
+        if ($connection->cursor('joins_backfilled') === null) {
+            $backfill = self::backfillSessionJoins();
+
+            $total_imported += $backfill['imported'];
+            $total_failed   += $backfill['failed'];
+            $total_skipped  += $backfill['skipped'];
+
+            if ($backfill['complete']) {
+                $connection->setCursor('joins_backfilled', $run_start);
+                $task->log(sprintf(
+                    'First pull for this connection: back-filled its session-join history '
+                    . '(%d fetched, %d imported, %d already present).',
+                    $backfill['fetched'],
+                    $backfill['imported'],
+                    $backfill['skipped']
+                ));
+            } else {
+                $task->log(
+                    'The session-join history back-fill did not run to the end; it will be retried '
+                    . 'on the next pull. Rows already imported are kept.'
+                );
+            }
+        }
+
         // --- Session joins (v4.5.0) ------------------------------------------
         // The actual sharing activity: one row each time someone joined a
         // shared session. date_from/date_to are ignored here too - measured

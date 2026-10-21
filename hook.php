@@ -997,7 +997,7 @@ function plugin_integrasipaman_install(): bool
         'provisioning_scan',
         DAY_TIMESTAMP,
         [
-            'comment' => 'Refresh the PAMAN provisioning queue (eligibility, drift, assets marked for removal)',
+            'comment' => 'Refresh the JumpServer provisioning queue (eligibility, drift, assets marked for removal)',
             'mode'    => CronTask::MODE_EXTERNAL,
         ]
     );
@@ -1051,6 +1051,7 @@ function plugin_integrasipaman_install(): bool
             `extra_entities` VARCHAR(255) NOT NULL DEFAULT '',
             `is_active` TINYINT NOT NULL DEFAULT 1,
             `last_logs_pull` TIMESTAMP NULL DEFAULT NULL,
+            `joins_backfilled` TIMESTAMP NULL DEFAULT NULL,
             `url` VARCHAR(255) NOT NULL DEFAULT '',
             `access_key_id` VARCHAR(191) NOT NULL DEFAULT '',
             `access_key_secret` TEXT NULL,
@@ -1083,6 +1084,13 @@ function plugin_integrasipaman_install(): bool
         'name'           => "VARCHAR(191) NOT NULL DEFAULT ''",
         'extra_entities' => "VARCHAR(255) NOT NULL DEFAULT ''",
         'last_logs_pull' => 'TIMESTAMP NULL DEFAULT NULL',
+        // v4.5.0: when this connection's session-join history was pulled in
+        // full. The hourly pull only looks forward from `last_logs_pull`, and
+        // a connection added later inherits the cron task's `lastrun`, so
+        // without this every join older than the moment it was configured
+        // would be unreachable - silently, with no screen ever saying so.
+        // NULL means the cron owes this connection one full back-fill.
+        'joins_backfilled' => 'TIMESTAMP NULL DEFAULT NULL',
         // v4.4.0: the rule settings this connection keeps for itself, as JSON
         // {setting key: value}. A setting not in it is inherited (see
         // inc/rulesettings.class.php). NULL = it overrides nothing.
@@ -1095,6 +1103,36 @@ function plugin_integrasipaman_install(): bool
             trigger_error(sprintf('Unable to add %s.%s: %s', $connections_table, $connection_col, $DB->error()), E_USER_WARNING);
             return false;
         }
+    }
+
+    // v4.5.0: the provisioning cron's description said "PAMAN" while the other
+    // four said "JumpServer". CronTask::Register() writes `comment` only when
+    // it creates the row, so an instance that installed earlier keeps the old
+    // word on Setup > Automatic actions forever. Rewrite it in place.
+    //
+    // Only this one string: the rest of the UI takes its word from
+    // inc/serverlabel.class.php, which derives it from the connection's URL on
+    // purpose (v3.10.0, user decision) and is NOT being retired.
+    $DB->doQuery(
+        "UPDATE `glpi_crontasks`
+            SET `comment` = 'Refresh the JumpServer provisioning queue (eligibility, drift, assets marked for removal)'
+          WHERE `itemtype` = 'PluginIntegrasipamanCron' AND `name` = 'provisioning_scan'
+            AND `comment` LIKE '%PAMAN%'"
+    );
+
+    // v4.5.0: a connection that already holds session_join rows was back-filled
+    // by hand (the 4.5.0 page), so mark it done rather than making the next
+    // cron re-fetch a history it already has. Dedup would make the re-fetch
+    // harmless but not free, and "harmless but pointless" is how a pull that
+    // should take a second starts taking a minute.
+    if ($DB->fieldExists($connections_table, 'joins_backfilled', false)) {
+        $fk = 'plugin_jumpserver_connections_id';
+        $DB->doQuery(
+            "UPDATE `$connections_table` c SET c.`joins_backfilled` = NOW()
+              WHERE c.`joins_backfilled` IS NULL
+                AND EXISTS (SELECT 1 FROM `$table` l
+                             WHERE l.`$fk` = c.`id` AND l.`event_type` = 'session_join')"
+        );
     }
 
     // v4.4.2: the root entity is not an additional entity. 4.4.0 stored one on

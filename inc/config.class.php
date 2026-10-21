@@ -659,7 +659,16 @@ class PluginIntegrasipamanConfig extends CommonDBTM
         // --- Terminal command audit ----------------------------------------
         // The first pane is the one shown on load: the connection's, or here the
         // first the form has.
-        self::openSection('terminal', $sections['terminal'], '', $defaults_mode);
+        // v4.5.0: the terminal back-fill gets a way in too. It had been
+        // reachable only by typing its URL since it was written, which is why
+        // the session-join one was built the same way without anyone noticing.
+        $terminal_backfill = $defaults_mode ? '' :
+            '<a class="btn btn-sm btn-outline-secondary text-nowrap" href="'
+            . Plugin::getWebDir('integrasipaman') . '/front/backfill.php">'
+            . '<i class="ti ti-calendar-down me-1"></i>'
+            . htmlescape(__('Backfill a month', 'integrasipaman')) . '</a>';
+
+        self::openSection('terminal', $sections['terminal'], $terminal_backfill, $defaults_mode);
 
         if (!$defaults_mode) {
         echo '<div class="col-12">';

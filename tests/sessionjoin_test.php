@@ -269,5 +269,49 @@ check(preg_match('/backfillSessionJoins.*?signedGetEach/s', $cron) === 1,
 check(preg_match('/backfillSessionJoins.*?importRows\(\$rows\)/s', $cron) === 1,
       'each page is imported before the next is fetched, so an interrupted run keeps what it had');
 
+// --- v4.5.0: the back-fill must not need a human ---------------------------
+// 4.5.0 shipped it as a button. A connection added later inherits the cron
+// task's lastrun, not a blank one, so every join older than the moment it was
+// configured stays unreachable - silently, which is the failure mode that
+// made the card read zero in the first place. The cron owes each connection
+// one full back-fill.
+$hook = file_get_contents(__DIR__ . '/../hook.php');
+
+check(str_contains($cron, "cursor('joins_backfilled') === null"),
+      'the cron back-fills a connection that has never been back-filled');
+check(str_contains($hook, "'joins_backfilled' => 'TIMESTAMP NULL DEFAULT NULL'"),
+      'and the column that remembers it is added on upgrade, not only on install');
+check(str_contains($hook, '`joins_backfilled` TIMESTAMP NULL DEFAULT NULL'),
+      'a fresh install gets the column too');
+
+// Done only on a COMPLETE fetch: a run cut short must be retried, not
+// recorded as a history someone can rely on.
+$mark_at  = strpos($cron, "setCursor('joins_backfilled'");
+$guard_at = strrpos(substr($cron, 0, $mark_at), "complete']");
+check($mark_at !== false && $guard_at !== false && ($mark_at - $guard_at) < 200,
+      'the marker is set only when the fetch ran to the end');
+
+// Before the windowed pull, so the cursor it sets cannot hide anything.
+check(strpos($cron, "cursor('joins_backfilled')") < strpos($cron, "'order' => '-date_joined'"),
+      'the history is taken before the incremental pull, not after it');
+
+// An instance that already back-filled by hand must not re-fetch it.
+check(str_contains($hook, 'c.`joins_backfilled` IS NULL') && str_contains($hook, "l.`event_type` = 'session_join'"),
+      'a connection that already holds joins is marked done by the migration');
+
+// --- v4.5.0: the word on Setup > Automatic actions -------------------------
+// Four of the five cron descriptions said JumpServer; provisioning_scan said
+// PAMAN. Register() writes `comment` only when it creates the row, so an
+// older instance keeps the word forever unless it is rewritten.
+check(!str_contains($hook, "'Refresh the PAMAN provisioning queue"),
+      'the provisioning cron no longer registers itself as PAMAN');
+check(str_contains($hook, 'UPDATE `glpi_crontasks`') && str_contains($hook, "LIKE '%PAMAN%'"),
+      'and an instance that already stored the old word has it rewritten');
+
+// The derived label is deliberately NOT retired (v3.10.0, user decision).
+$label = file_get_contents(__DIR__ . '/../inc/serverlabel.class.php');
+check(str_contains($label, 'public const FALLBACK') && str_contains($label, 'fromUrl'),
+      'the URL-derived server label still exists and was not replaced wholesale');
+
 echo $fails === 0 ? "\nALL PASS\n" : "\n$fails FAILURE(S)\n";
 exit($fails === 0 ? 0 : 1);

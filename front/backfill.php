@@ -53,14 +53,38 @@ echo '<p><a href="' . htmlescape(Plugin::getWebDir('integrasipaman')) . '/front/
 
 echo '<div class="card"><div class="card-body">';
 
+// v4.5.0: a month picker. This page took the month only as a hand-typed
+// `?month=YYYY-MM`, so it was usable solely by whoever had the deploy
+// document open - a tool nobody could find and nobody could drive.
+// Rendered on every branch, so after a run the next month is one click away.
+$self = Plugin::getWebDir('integrasipaman') . '/front/backfill.php';
+
+echo '<form method="get" action="' . htmlescape($self) . '" class="row g-2 align-items-end mb-3">';
+echo '<div class="col-auto">';
+echo '<label class="form-label" for="bf-month">' . htmlescape(__('Month to backfill', 'integrasipaman')) . '</label>';
+
+// A native month input would be neater, but it offers no way to stop the
+// user picking a month outside the retention window - the next prune would
+// simply delete what was just pulled. A list of the allowed months cannot
+// express an impossible choice.
+echo '<select class="form-select" id="bf-month" name="month">';
+for ($m = $newest_allowed; $m >= $oldest_allowed; $m = date('Y-m', strtotime($m . '-01 -1 month'))) {
+    echo '<option value="' . htmlescape($m) . '"' . ($m === $month ? ' selected' : '') . '>'
+        . htmlescape(date('F Y', (int) strtotime($m . '-01'))) . '</option>';
+}
+echo '</select>';
+echo '</div>';
+echo '<div class="col-auto"><button type="submit" class="btn btn-primary">'
+    . '<i class="ti ti-download me-1"></i>' . htmlescape(__('Backfill this month', 'integrasipaman')) . '</button></div>';
+echo '</form>';
+
+echo '<p class="text-muted small">' . htmlescape(sprintf(
+    __('Only the last %1$d months can be offered: the retention prune deletes anything older on its next run, so pulling it would be wasted work.', 'integrasipaman'),
+    $retention
+)) . '</p>';
+
 if ($month === '') {
-    echo '<p>' . htmlescape(__('Add ?month=YYYY-MM to backfill one month of terminal commands & sessions.', 'integrasipaman')) . '</p>';
-    echo '<p class="text-muted">' . htmlescape(sprintf(
-        __('Allowed range: %1$s to %2$s (retention = %3$d months).', 'integrasipaman'),
-        $oldest_allowed,
-        $newest_allowed,
-        $retention
-    )) . '</p>';
+    echo '<p class="text-muted">' . htmlescape(__('Pick a month and press the button. Running the same month twice imports nothing new: records already pulled are skipped, not duplicated.', 'integrasipaman')) . '</p>';
 } elseif (!$valid) {
     echo '<div class="alert alert-danger">' . htmlescape(sprintf(
         __('"%1$s" is not a valid month in the allowed range %2$s .. %3$s.', 'integrasipaman'),

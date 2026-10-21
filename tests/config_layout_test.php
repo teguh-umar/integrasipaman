@@ -102,5 +102,25 @@ $guard_at = strrpos(substr($config_src, 0, $link_at), '$defaults_mode');
 check($guard_at !== false && ($link_at - $guard_at) < 400,
       'and it is hidden while editing defaults, where there is no one connection to back-fill');
 
+// v4.5.0: the TERMINAL back-fill gets a way in as well. It had been URL-only
+// since it was written, which is how the session-join one came to be built
+// the same way without anyone noticing.
+check(str_contains($config_src, 'front/backfill.php'),
+      'the terminal back-fill is linked from Setup, not URL-only');
+
+// And the page is now drivable: a month picker instead of a hand-typed query
+// string. The list is built from the retention window, because a month
+// outside it would be deleted by the next prune - an impossible choice is
+// better left unofferable than validated after the fact.
+$backfill_src = (string) file_get_contents(__DIR__ . '/../front/backfill.php');
+check(str_contains($backfill_src, '<select class="form-select" id="bf-month" name="month">'),
+      'the month is picked from a list');
+check(str_contains($backfill_src, '$oldest_allowed') && str_contains($backfill_src, '$newest_allowed'),
+      'and the list is bounded by the retention window');
+check(!str_contains($backfill_src, 'Add ?month=YYYY-MM'),
+      'the "type a query string" instruction is gone');
+check(strpos($backfill_src, '</form>') < strpos($backfill_src, "if (\$month === '')"),
+      'the form renders on every branch, so the next month is one click away after a run');
+
 echo $fails === 0 ? "\nALL PASS\n" : "\n$fails FAILURE(S)\n";
 exit($fails === 0 ? 0 : 1);

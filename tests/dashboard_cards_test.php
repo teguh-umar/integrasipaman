@@ -115,6 +115,16 @@ namespace {
     $r = $D::provideSessionSharing([]);
     check($r['label'] === "JumpServer Session Sharing ($down 50%)", 'session sharing too');
 
+    // v4.5.0: WHAT it counts. Until then this card counted 'session_share',
+    // the creation of a share link - two of which covered every join this
+    // instance had seen since February, so the card read 0 through weeks of
+    // real activity. It counts joins now. If this assertion ever flips back
+    // to session_share, the card is broken again in exactly that way.
+    $joinQ = array_values(array_filter($DB->requests, static fn ($q) => ($q['WHERE']['event_type'] ?? null) === 'session_join'));
+    check(count($joinQ) === 3, 'the card counts session joins, not the share links that allowed them');
+    check(array_filter($DB->requests, static fn ($q) => ($q['WHERE']['event_type'] ?? null) === 'session_share') === [],
+          'and never counts share links');
+
     // a dashboard date filter
     $DB->requests = []; $DB->counts = [10, 10, 5];
     $r = $D::provideTotalEvents(['apply_filters' => ['dates' => ['2026-09-01', '2026-09-30']]]);

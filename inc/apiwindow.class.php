@@ -193,4 +193,32 @@ class PluginIntegrasipamanApiWindow
 
         return $ts === false ? null : $ts;
     }
+
+    /**
+     * A JumpServer timestamp as a MySQL datetime in GLPI's own timezone, or
+     * null when the value is missing or not a time at all.
+     *
+     * Two formats arrive from the same server: ISO 8601, and
+     * "2026/10/16 23:35:45 +0800" (session-sharings, session-join-records).
+     * Both carry an explicit offset, and that offset matters: this JumpServer
+     * reports **+0800** while GLPI runs Asia/Jakarta (+0700). strtotime()
+     * resolves the offset to an absolute instant and date() renders it in
+     * GLPI's timezone, so the hour is converted rather than copied. Writing
+     * the raw string into a TIMESTAMP column would instead shift every event
+     * an hour forward and throw anything near midnight onto the wrong day.
+     *
+     * Values outside what a MySQL TIMESTAMP can hold are rejected as null
+     * (suite §4 rule 2e): out-of-range dates are stored as NULL rather than
+     * silently clamped to 1970.
+     */
+    public static function sqlTime(?string $value): ?string
+    {
+        $ts = self::toTs($value);
+
+        if ($ts === null || $ts < 1 || $ts > 2147483647) {
+            return null;
+        }
+
+        return date('Y-m-d H:i:s', $ts);
+    }
 }

@@ -46,6 +46,9 @@ class PluginIntegrasipamanSessionSharing
 
     public const EVENT_TYPE = 'session_share';
 
+    /** A join: someone entering a session that was shared (v4.5.0). */
+    public const EVENT_TYPE_JOIN = 'session_join';
+
     /** Rows read before the page's own filters are applied. */
     public const ROW_LIMIT = 5000;
 
@@ -79,9 +82,9 @@ class PluginIntegrasipamanSessionSharing
         $shared_ts = $made ?? self::parseTime($row['date_creation'] ?? null);
 
         // WHO shared: the creator JumpServer names, else what the pull stored.
-        $by = trim((string) ($data['created_by'] ?? ''));
+        $by = self::textOf($data['created_by'] ?? '');
         if ($by === '') {
-            $by = trim((string) ($data['creator']['name'] ?? ($row['username'] ?? '')));
+            $by = self::textOf(self::objectOf($data, 'creator')['name'] ?? '') ?: self::textOf($row['username'] ?? '');
         }
 
         // WITH WHOM: the named users. Empty means a link and a code.
@@ -106,19 +109,63 @@ class PluginIntegrasipamanSessionSharing
         }
 
         return [
-            'id'              => (string) ($data['id'] ?? ($row['source_id'] ?? '')),
+            'id'              => self::idOf($data['id'] ?? '') ?: self::textOf($row['source_id'] ?? ''),
             'shared_at'       => $shared_ts === null ? '' : date('Y-m-d H:i:s', $shared_ts),
             'shared_at_known' => $known,
             'shared_by'       => $by,
             'recipients'      => $recipients,
             'by_link'         => $recipients === [],
-            'session_id'      => (string) ($data['session']['id'] ?? ''),
-            'session_asset'   => trim((string) ($session['asset'] ?? '')),
-            'session_user'    => trim((string) ($session['jms_user'] ?? '')),
+            'session_id'      => self::idOf($data['session'] ?? ''),
+            'session_asset'   => self::textOf($session['asset'] ?? ''),
+            'session_user'    => self::textOf($session['jms_user'] ?? ''),
             'minutes'         => $minutes,
             'expires_at'      => $expires === null ? '' : date('Y-m-d H:i:s', $expires),
             'status'          => $status,
         ];
+    }
+
+    /**
+     * A scalar field of a JumpServer record, as text. Anything that is not a
+     * scalar - an object, a list, null - becomes ''.
+     *
+     * Every field this class reads goes through this or idOf(). Casting an
+     * API value straight to string is what produced "Array to string
+     * conversion" twice on production (2026-10-21): first on `session`,
+     * then, after that one field was fixed in isolation, on `sharing` right
+     * beside it. The shapes are not knowable from the endpoint's field list,
+     * so no field is assumed to be flat.
+     *
+     * @param mixed $value
+     */
+    private static function textOf($value): string
+    {
+        return is_scalar($value) ? trim((string) $value) : '';
+    }
+
+    /**
+     * An id out of a field that may be the id itself or an object carrying
+     * it: `"session": {"id": "..."}` and `"session": "..."` both yield the
+     * id, and anything else yields ''.
+     *
+     * @param mixed $value
+     */
+    private static function idOf($value): string
+    {
+        return is_array($value) ? self::textOf($value['id'] ?? '') : self::textOf($value);
+    }
+
+    /** A nested object of a record, or [] when the field is not one. */
+    private static function objectOf(array $data, string $key): array
+    {
+        return is_array($data[$key] ?? null) ? $data[$key] : [];
+    }
+
+    /** The session id of one logs row, from its stored JSON. */
+    private static function sessionIdOfRow(array $row): string
+    {
+        $data = json_decode((string) ($row['message'] ?? ''), true);
+
+        return is_array($data) ? self::idOf($data['session'] ?? '') : '';
     }
 
     /**
@@ -169,7 +216,7 @@ class PluginIntegrasipamanSessionSharing
 
         $out = [];
         foreach ($rows as $row) {
-            $session_id = (string) (json_decode((string) ($row['message'] ?? ''), true)['session']['id'] ?? '');
+            $session_id = self::sessionIdOfRow($row);
             $share      = self::describe($row, $sessions[$session_id] ?? null, $now);
 
             $at = $share['shared_at'] === '' ? null : strtotime($share['shared_at']);
@@ -188,9 +235,139 @@ class PluginIntegrasipamanSessionSharing
     }
 
     /**
+     * One join, as the page shows it: someone entering a session that had
+     * been shared (v4.5.0).
+     *
+     * The same three corrections the share rows need apply here, for the same
+     * reasons - WHEN comes from the record and not from the import, and WHO
+     * needs care. On a join record `created_by` is the terminal component
+     * that wrote the row, not a person, so the joiner is read from `joiner`.
+     *
+     * @param array<string, mixed>      $row     A logs row (event_type session_join).
+     * @param array<string, mixed>|null $session The sessions row of the joined
+     *                                           session, when the terminal pull has it.
+     * @return array{
+     *   id: string, joined_at: string, joined_at_known: bool, left_at: string,
+     *   joiner: string, from_ip: string, via: string, session_id: string,
+     *   session_asset: string, session_user: string, sharing_id: string,
+     *   succeeded: bool, finished: bool, reason: string
+     * }
+     */
+    public static function describeJoin(array $row, ?array $session = null): array
+    {
+        $data = json_decode((string) ($row['message'] ?? ''), true);
+        $data = is_array($data) ? $data : [];
+
+        // WHEN. Since v4.5.0 date_creation already holds the event time, but
+        // the record's own value stays the first authority: a row imported
+        // before that migration, or one JumpServer gave no time for, falls
+        // back to the column and says so.
+        $joined     = self::parseTime($data['date_joined'] ?? null);
+        $known      = $joined !== null;
+        $joined_ts  = $joined ?? self::parseTime($row['date_creation'] ?? null);
+        $left_ts    = self::parseTime($data['date_left'] ?? null);
+
+        $joiner = self::textOf(self::objectOf($data, 'joiner')['name'] ?? '');
+        if ($joiner === '') {
+            $joiner = self::textOf($data['joiner_display'] ?? '') ?: self::textOf($row['username'] ?? '');
+        }
+
+        // HOW they came in: {"value":"WT","label":"Web Terminal"}. The label
+        // is the readable half; fall back to the code rather than to blank.
+        $login_from = self::objectOf($data, 'login_from');
+        $via        = self::textOf($login_from['label'] ?? '') ?: self::textOf($login_from['value'] ?? '');
+
+        return [
+            'id'              => self::idOf($data['id'] ?? '') ?: self::textOf($row['source_id'] ?? ''),
+            'joined_at'       => $joined_ts === null ? '' : date('Y-m-d H:i:s', $joined_ts),
+            'joined_at_known' => $known,
+            'left_at'         => $left_ts === null ? '' : date('Y-m-d H:i:s', $left_ts),
+            'joiner'          => $joiner,
+            'from_ip'         => self::textOf($data['remote_addr'] ?? '') ?: self::textOf($row['ip_address'] ?? ''),
+            'via'             => $via,
+            'session_id'      => self::idOf($data['session'] ?? ''),
+            'session_asset'   => self::textOf($session['asset'] ?? ''),
+            'session_user'    => self::textOf($session['jms_user'] ?? ''),
+            'sharing_id'      => self::idOf($data['sharing'] ?? ''),
+            'succeeded'       => !empty($data['is_success']),
+            'finished'        => !empty($data['is_finished']),
+            'reason'          => self::textOf($data['reason'] ?? ''),
+        ];
+    }
+
+    /**
+     * The joins the viewer may see, newest first.
+     *
+     * Unlike find(), this filters in SQL: since v4.5.0 `date_creation` holds
+     * the event time, so the date window is a column comparison instead of a
+     * scan through decoded JSON. That matters here - this instance already
+     * has three figures' worth of join records against two share links.
+     *
+     * @param array{from?: string, to?: string, q?: string} $filters from / to are Y-m-d.
+     * @return list<array<string, mixed>>
+     */
+    public static function findJoins(array $filters = []): array
+    {
+        global $DB;
+
+        $where = ['event_type' => self::EVENT_TYPE_JOIN] + PluginIntegrasipamanConnection::viewer();
+
+        $from = self::dayStart($filters['from'] ?? '');
+        $to   = self::dayEnd($filters['to'] ?? '');
+        if ($from !== null) {
+            $where[] = ['date_creation' => ['>=', date('Y-m-d H:i:s', $from)]];
+        }
+        if ($to !== null) {
+            $where[] = ['date_creation' => ['<=', date('Y-m-d H:i:s', $to)]];
+        }
+
+        $rows = [];
+        foreach ($DB->request([
+            'FROM'  => self::LOGS_TABLE,
+            'WHERE' => $where,
+            'ORDER' => 'date_creation DESC',
+            'LIMIT' => self::ROW_LIMIT,
+        ]) as $row) {
+            $rows[] = $row;
+        }
+        if ($rows === []) {
+            return [];
+        }
+
+        $sessions = self::sessionsFor($rows);
+
+        $q   = mb_strtolower(trim((string) ($filters['q'] ?? '')));
+        $out = [];
+
+        foreach ($rows as $row) {
+            $session_id = self::sessionIdOfRow($row);
+            $join       = self::describeJoin($row, $sessions[$session_id] ?? null);
+
+            if ($q !== '' && !str_contains(mb_strtolower(self::joinSearchText($join)), $q)) {
+                continue;
+            }
+            $out[] = $join;
+        }
+
+        return $out;
+    }
+
+    /** Everything a text search matches a join against. */
+    private static function joinSearchText(array $join): string
+    {
+        return implode(' ', [
+            $join['joiner'], $join['from_ip'], $join['via'],
+            $join['session_asset'], $join['session_user'], $join['session_id'],
+        ]);
+    }
+
+    /**
      * The sessions rows of the shared sessions, by session id. Restricted to the
      * viewer like everything else: a session of an entity the viewer cannot see
      * leaves the share with an unknown asset, not with another entity's data.
+     *
+     * Both record kinds go through sessionIdOf(), which takes either shape,
+     * so there is no longer a shape for the caller to get wrong.
      *
      * @param list<array<string, mixed>> $rows
      * @return array<string, array<string, mixed>>
@@ -201,7 +378,7 @@ class PluginIntegrasipamanSessionSharing
 
         $ids = [];
         foreach ($rows as $row) {
-            $id = (string) (json_decode((string) ($row['message'] ?? ''), true)['session']['id'] ?? '');
+            $id = self::sessionIdOfRow($row);
             if ($id !== '') {
                 $ids[$id] = true;
             }

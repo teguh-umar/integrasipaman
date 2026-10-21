@@ -13,6 +13,102 @@ if (!defined('GLPI_ROOT')) {
 }
 
 /**
+ * Fill `date_creation` with the time each event actually happened on
+ * JumpServer, read out of the JSON the row already carries in `message`.
+ * One-shot, run by the v4.5.0 migration after `date_import` has taken a copy
+ * of the old values.
+ *
+ * Why the JSON and not another API call: every row kept the whole JumpServer
+ * record, so the event time has been sitting in the table all along - it was
+ * only never promoted to a column. No network, no credentials, no
+ * JumpServer-side retention limit to run into.
+ *
+ * Walks by `id` in batches so the migration holds no large result set and
+ * takes no long lock, which matters on an audit table that is years deep.
+ * A row whose JSON has no usable time is left exactly as it was.
+ *
+ * @param string $table The logs table.
+ * @return bool False only on a write failure, which aborts the migration.
+ */
+function plugin_integrasipaman_backfill_event_dates(string $table): bool
+{
+    global $DB;
+
+    require_once __DIR__ . '/inc/apiwindow.class.php';
+
+    // Which JSON key holds the event time, by event_type. Anything else is an
+    // operate-log entry, whose key is 'datetime'.
+    $field_for = [
+        'session_share'     => 'date_created',
+        'session_join'      => 'date_joined',
+        'user_login_failed' => 'datetime',
+    ];
+
+    $batch   = 500;
+    $last_id = 0;
+    $updated = 0;
+
+    while (true) {
+        $rows = [];
+        foreach ($DB->request([
+            'SELECT' => ['id', 'event_type', 'message', 'date_creation'],
+            'FROM'   => $table,
+            'WHERE'  => ['id' => ['>', $last_id]],
+            'ORDER'  => 'id ASC',
+            'LIMIT'  => $batch,
+        ]) as $row) {
+            $rows[] = $row;
+        }
+
+        if ($rows === []) {
+            break;
+        }
+
+        foreach ($rows as $row) {
+            $last_id = (int) $row['id'];
+
+            $data = json_decode((string) ($row['message'] ?? ''), true);
+            if (!is_array($data)) {
+                continue;
+            }
+
+            $key   = $field_for[(string) $row['event_type']] ?? 'datetime';
+            $value = $data[$key] ?? null;
+            $when  = PluginIntegrasipamanApiWindow::sqlTime(is_scalar($value) ? (string) $value : null);
+
+            if ($when === null || $when === (string) $row['date_creation']) {
+                continue;
+            }
+
+            if (!$DB->update($table, ['date_creation' => $when], ['id' => $last_id])) {
+                trigger_error(
+                    sprintf('Unable to backfill date_creation on %s row %d: %s', $table, $last_id, $DB->error()),
+                    E_USER_WARNING
+                );
+                return false;
+            }
+
+            $updated++;
+        }
+    }
+
+    // Said out loud: the numbers on every card move when this runs, and an
+    // upgrade that silently rewrites a production column is the kind of thing
+    // that should leave a trace someone can find later.
+    Toolbox::logInFile(
+        'integrasipaman',
+        sprintf(
+            "v4.5.0 migration: %d of the rows in %s had their date_creation set to the JumpServer event time; "
+            . "the previous value of every row is kept in date_import.\n",
+            $updated,
+            $table
+        )
+    );
+
+    return true;
+}
+
+/**
  * Plugin install process.
  *
  * @return boolean
@@ -40,6 +136,23 @@ function plugin_integrasipaman_install(): bool
         // via $DB->fieldExists($table, 'date_creation') - matching that
         // exact name is what lets our dashboard cards support the native
         // per-dashboard date filter with zero custom filter-class code.
+        // v4.5.0 - what the two timestamps mean, because they were one
+        // column until this version and the difference is the whole point:
+        //   `date_creation` is WHEN THE EVENT HAPPENED on JumpServer,
+        //   converted from its +0800 offset into GLPI's timezone.
+        //   `date_import`   is when this row was written here.
+        // They are not the same. A first full-history pull writes months of
+        // events in one minute, and until v4.5.0 every card counted the
+        // minute instead of the months - which is why the Session Sharing
+        // card could read 0 for a period that had real activity.
+        // `date_creation` keeps that name (rather than the more obvious
+        // `event_date`) for the reason spelled out above: core's DatesFilter
+        // only offers itself on a table that has a column by that name, and
+        // the event time is what every card, filter and export should be
+        // windowing on. When JumpServer gives no usable time for an entry,
+        // the insert falls back to the import time, so the column is never
+        // empty and a row is never invisible to a date filter.
+        //
         // `source_id` holds the JumpServer-side UUID of the record this
         // row came from (operating-log entry, login-log entry, or
         // session-sharing entry), used to skip re-importing the same
@@ -63,8 +176,10 @@ function plugin_integrasipaman_install(): bool
             `message` TEXT NULL,
             `source_id` VARCHAR(64) NULL DEFAULT NULL,
             `date_creation` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            `date_import` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (`id`),
-            KEY `source_id` (`source_id`)
+            KEY `source_id` (`source_id`),
+            KEY `event_type_date` (`event_type`, `date_creation`)
         ) ENGINE=InnoDB DEFAULT CHARSET={$default_charset} COLLATE={$default_collation}";
 
         if (!$DB->doQuery($query)) {
@@ -99,6 +214,51 @@ function plugin_integrasipaman_install(): bool
                     E_USER_WARNING
                 );
                 return false;
+            }
+        }
+
+        // Upgrade path from plugin versions <4.5.0: split the one timestamp
+        // into event time (`date_creation`) and import time (`date_import`).
+        // Ordered so that nothing is lost at any point: the original value is
+        // COPIED into the new column first, and only then is `date_creation`
+        // rewritten from each row's stored JSON. A row whose JSON holds no
+        // usable time keeps the value it already had. `date_import` is
+        // therefore a complete record of the column as it stood before this
+        // migration, and restoring it is one UPDATE.
+        if (!$DB->fieldExists($table, 'date_import')) {
+            if (!$DB->doQuery("ALTER TABLE `$table` ADD COLUMN `date_import` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP")) {
+                trigger_error(
+                    sprintf('Unable to add date_import to %s: %s', $table, $DB->error()),
+                    E_USER_WARNING
+                );
+                return false;
+            }
+
+            if (!$DB->doQuery("UPDATE `$table` SET `date_import` = `date_creation`")) {
+                trigger_error(
+                    sprintf('Unable to seed date_import on %s: %s', $table, $DB->error()),
+                    E_USER_WARNING
+                );
+                return false;
+            }
+
+            if (!plugin_integrasipaman_backfill_event_dates($table)) {
+                return false;
+            }
+        }
+
+        // function_exists() guard: a missing core helper must not fatal an
+        // install over an index, which is a speed matter and nothing more.
+        if (!function_exists('isIndex') || !isIndex($table, 'event_type_date')) {
+            // Every card counts one event_type inside a date window, and
+            // after the backfill that window is a range scan on a column the
+            // rows are no longer inserted in order of.
+            if (!$DB->doQuery("ALTER TABLE `$table` ADD KEY `event_type_date` (`event_type`, `date_creation`)")) {
+                trigger_error(
+                    sprintf('Unable to add event_type_date index to %s: %s', $table, $DB->error()),
+                    E_USER_WARNING
+                );
+                // Not fatal: an index is a speed matter, not a correctness one.
             }
         }
     }

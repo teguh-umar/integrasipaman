@@ -439,7 +439,18 @@ class PluginIntegrasipamanConfig extends CommonDBTM
 
         // --- JumpServer connection -----------------------------------------
         if (!$defaults_mode) {
-        self::openSection('connection', $sections['connection'], '', true);
+        // v4.5.0: the one-shot session-join back-fill lives here because the
+        // audit-log pull it completes belongs to this connection. Without a
+        // link it was reachable only by typing the URL, which is how a tool
+        // stops existing. Not offered in defaults mode: there is no one
+        // connection to back-fill there.
+        $join_backfill = $defaults_mode ? '' :
+            '<a class="btn btn-sm btn-outline-secondary text-nowrap" href="'
+            . Plugin::getWebDir('integrasipaman') . '/front/backfilljoins.php">'
+            . '<i class="ti ti-history me-1"></i>'
+            . htmlescape(__('Back-fill session joins', 'integrasipaman')) . '</a>';
+
+        self::openSection('connection', $sections['connection'], $join_backfill, true);
 
         // v3.11.0: the entity that owns this JumpServer, and whether its
         // child entities are covered. What is pulled through the connection

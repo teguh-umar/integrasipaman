@@ -164,62 +164,84 @@ if ($pbi_host === '') {
         $pbi_password
     );
 
-    jumpserver_pbi_render_section(
-        __('Sessions', 'integrasipaman'),
-        $pbi_connection->fetchRows(PluginIntegrasipamanPbiConnection::VIEW_SESSIONS, $row_limit),
+    // v4.5.0: every section is fetched before anything is drawn, so the page
+    // can tell "the reporting database is unreachable" (one fact, said once)
+    // from "this one view came back empty". Before, an unreachable database
+    // produced four identical red boxes, each inside its own card - four
+    // copies of one message, pushing the figures above them off the screen.
+    $sections = [
         [
-            'date_start'      => __('Date', 'integrasipaman'),
-            'user_display'    => __('User', 'integrasipaman'),
-            'asset'           => __('Asset', 'integrasipaman'),
-            'protocol'        => __('Protocol', 'integrasipaman'),
-            'duration_bucket' => __('Duration', 'integrasipaman'),
-            'session_status'  => __('Status', 'integrasipaman'),
-            'client_ip'       => __('IP Address', 'integrasipaman'),
+            __('Sessions', 'integrasipaman'),
+            PluginIntegrasipamanPbiConnection::VIEW_SESSIONS,
+            [
+                'date_start'      => __('Date', 'integrasipaman'),
+                'user_display'    => __('User', 'integrasipaman'),
+                'asset'           => __('Asset', 'integrasipaman'),
+                'protocol'        => __('Protocol', 'integrasipaman'),
+                'duration_bucket' => __('Duration', 'integrasipaman'),
+                'session_status'  => __('Status', 'integrasipaman'),
+                'client_ip'       => __('IP Address', 'integrasipaman'),
+            ],
         ],
-        $row_limit
-    );
+        [
+            __('Commands', 'integrasipaman'),
+            PluginIntegrasipamanPbiConnection::VIEW_COMMANDS,
+            [
+                'executed_at'  => __('Date', 'integrasipaman'),
+                'user'         => __('User', 'integrasipaman'),
+                'asset'        => __('Asset', 'integrasipaman'),
+                'command_text' => __('Command', 'integrasipaman'),
+                'risk_label'   => __('Risk', 'integrasipaman'),
+            ],
+        ],
+        [
+            __('Login Monitor', 'integrasipaman'),
+            PluginIntegrasipamanPbiConnection::VIEW_LOGIN_FAILURES,
+            [
+                'login_time' => __('Date', 'integrasipaman'),
+                'username'   => __('Username', 'integrasipaman'),
+                'ip_address' => __('IP Address', 'integrasipaman'),
+                'ip_type'    => __('IP Type', 'integrasipaman'),
+                'mfa_type'   => __('MFA', 'integrasipaman'),
+                'reason'     => __('Reason', 'integrasipaman'),
+            ],
+        ],
+        [
+            __('Session Sharing', 'integrasipaman'),
+            PluginIntegrasipamanPbiConnection::VIEW_SESSION_SHARING,
+            [
+                'shared_at'      => __('Shared At', 'integrasipaman'),
+                'sharer_display' => __('Sharer', 'integrasipaman'),
+                'session_owner'  => __('Session Owner', 'integrasipaman'),
+                'asset_name'     => __('Asset', 'integrasipaman'),
+                'access_mode'    => __('Access Mode', 'integrasipaman'),
+                'share_status'   => __('Status', 'integrasipaman'),
+                'risk_level'     => __('Risk', 'integrasipaman'),
+            ],
+        ],
+    ];
 
-    jumpserver_pbi_render_section(
-        __('Commands', 'integrasipaman'),
-        $pbi_connection->fetchRows(PluginIntegrasipamanPbiConnection::VIEW_COMMANDS, $row_limit),
-        [
-            'executed_at'  => __('Date', 'integrasipaman'),
-            'user'         => __('User', 'integrasipaman'),
-            'asset'        => __('Asset', 'integrasipaman'),
-            'command_text' => __('Command', 'integrasipaman'),
-            'risk_label'   => __('Risk', 'integrasipaman'),
-        ],
-        $row_limit
-    );
+    $fetched = [];
+    foreach ($sections as [$title, $view, $columns]) {
+        $fetched[] = [$title, $pbi_connection->fetchRows($view, $row_limit), $columns];
+    }
 
-    jumpserver_pbi_render_section(
-        __('Login Monitor', 'integrasipaman'),
-        $pbi_connection->fetchRows(PluginIntegrasipamanPbiConnection::VIEW_LOGIN_FAILURES, $row_limit),
-        [
-            'login_time' => __('Date', 'integrasipaman'),
-            'username'   => __('Username', 'integrasipaman'),
-            'ip_address' => __('IP Address', 'integrasipaman'),
-            'ip_type'    => __('IP Type', 'integrasipaman'),
-            'mfa_type'   => __('MFA', 'integrasipaman'),
-            'reason'     => __('Reason', 'integrasipaman'),
-        ],
-        $row_limit
-    );
-
-    jumpserver_pbi_render_section(
-        __('Session Sharing', 'integrasipaman'),
-        $pbi_connection->fetchRows(PluginIntegrasipamanPbiConnection::VIEW_SESSION_SHARING, $row_limit),
-        [
-            'shared_at'      => __('Shared At', 'integrasipaman'),
-            'sharer_display' => __('Sharer', 'integrasipaman'),
-            'session_owner'  => __('Session Owner', 'integrasipaman'),
-            'asset_name'     => __('Asset', 'integrasipaman'),
-            'access_mode'    => __('Access Mode', 'integrasipaman'),
-            'share_status'   => __('Status', 'integrasipaman'),
-            'risk_level'     => __('Risk', 'integrasipaman'),
-        ],
-        $row_limit
-    );
+    if ($pbi_connection->failedToConnect()) {
+        // One line, no card, no red block: the figures from this plugin's own
+        // event log are above and are still worth reading. The detail tables
+        // are simply absent, which is the honest way to show that there is
+        // nothing to show.
+        echo '<p class="text-muted">'
+            . '<i class="ti ti-database-off me-1"></i>'
+            . htmlescape(__('The PBI reporting database is unreachable, so the detail tables are not available. The figures above come from the event log this plugin keeps itself and are unaffected.', 'integrasipaman'))
+            . ' <a href="' . htmlescape(Plugin::getWebDir('integrasipaman')) . '/front/config.form.php">'
+            . htmlescape(__('Check the configuration', 'integrasipaman')) . '</a>'
+            . '</p>';
+    } else {
+        foreach ($fetched as [$title, $rows, $columns]) {
+            jumpserver_pbi_render_section($title, $rows, $columns, $row_limit);
+        }
+    }
 }
 
 Html::footer();

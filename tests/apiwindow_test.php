@@ -116,5 +116,29 @@ check(count($kept) === 1 && $kept[0]['id'] === 'x', 'timezone offsets and micros
 $s = $w->stats();
 check(isset($s['kept'], $s['dropped'], $s['undated'], $s['ordered_desc']), 'stats() exposes the counters');
 
+// --- sqlTime(): the event time that v4.5.0 writes into date_creation ------
+// The trap this guards: JumpServer reports +0800 while GLPI runs +0700. A
+// value copied across instead of converted lands an hour late, which throws
+// anything near midnight onto the wrong day. This suite runs in UTC, so the
+// live sample below must come back 8 hours earlier than its face value.
+$W = 'PluginIntegrasipamanApiWindow';
+
+check($W::sqlTime('2026/10/16 23:35:45 +0800') === '2026-10-16 15:35:45',
+    'a +0800 JumpServer time is converted to the local zone, not copied');
+check($W::sqlTime('2026/10/16 00:30:00 +0800') === '2026-10-15 16:30:00',
+    'a time near midnight crosses to the previous day when the offset says so');
+check($W::sqlTime('2026-10-16T23:35:45Z') === '2026-10-16 23:35:45',
+    'the ISO form the audit endpoints use is accepted too');
+
+check($W::sqlTime(null) === null, 'null is not a time');
+check($W::sqlTime('') === null, 'empty is not a time');
+check($W::sqlTime('   ') === null, 'blank is not a time');
+check($W::sqlTime('not a date') === null, 'unparseable text is not a time');
+
+// Out of TIMESTAMP range -> null, never a clamp to 1970 (suite rule 2e).
+check($W::sqlTime('1850-01-01T00:00:00Z') === null, 'a pre-epoch date is rejected, not clamped');
+check($W::sqlTime('2099-01-01T00:00:00Z') === null, 'a post-2038 date is rejected, not clamped');
+check($W::sqlTime('1970-01-01T00:00:00Z') === null, 'the epoch itself is treated as no time at all');
+
 echo $fails === 0 ? "\nALL PASS\n" : "\n$fails FAILURE(S)\n";
 exit($fails === 0 ? 0 : 1);

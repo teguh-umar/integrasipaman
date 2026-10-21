@@ -88,5 +88,19 @@ check(preg_match("/addEventListener\(\s*'invalid'/", $body) === 1,
 check(str_contains($body, 'sessionStorage'),
       'the last opened tab is restored after Save, as on opmanager');
 
+// v4.5.0: the one-shot session-join back-fill must be reachable from the
+// page. It shipped reachable only by typing its URL, which is how a tool
+// quietly stops existing - the terminal back-fill next to it has been in
+// that state for versions.
+check(str_contains($config_src, 'front/backfilljoins.php'),
+      'the session-join back-fill is linked from Setup, not URL-only');
+// Guarded by $defaults_mode: in that mode no single connection is being
+// edited, so a back-fill button would have nothing to act on. Checked by
+// looking at the statement that builds the link, not at its whitespace.
+$link_at  = strpos($config_src, 'front/backfilljoins.php');
+$guard_at = strrpos(substr($config_src, 0, $link_at), '$defaults_mode');
+check($guard_at !== false && ($link_at - $guard_at) < 400,
+      'and it is hidden while editing defaults, where there is no one connection to back-fill');
+
 echo $fails === 0 ? "\nALL PASS\n" : "\n$fails FAILURE(S)\n";
 exit($fails === 0 ? 0 : 1);

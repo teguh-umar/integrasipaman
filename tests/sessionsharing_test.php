@@ -59,7 +59,7 @@ $share_named = [
     'id' => 2, 'username' => 'Sysadmin Eight(sysadmin.eight)', 'status' => 'success',
     'source_id' => 'sh-2', 'date_creation' => '2026-08-29 07:24:41',
     'message' => json_encode([
-        'id' => 'sh-2', 'verify_code' => 'SECRET-222', 'expired_time' => 60, 'users_display' => ['Sysadmin Twentyone(sysadmin.twentyone-e)'],
+        'id' => 'sh-2', 'verify_code' => 'SECRET-222', 'expired_time' => 60, 'users_display' => ['Sysadmin Eighteen(sysadmin.eighteen-e)'],
         'session' => ['id' => '94c7a001-01a2-4b33-a5c3-f8d538a7301d'], 'creator' => ['id' => 'u1', 'name' => 'Sysadmin Eight(sysadmin.eight)'],
         'is_active' => true, 'date_created' => '2026-10-12T11:30:00+00:00', 'created_by' => 'Sysadmin Eight(sysadmin.eight)',
     ]),
@@ -83,8 +83,8 @@ check($S::describe($bad_time, null, $NOW)['shared_at_known'] === false, 'a value
 // --- WITH WHOM -------------------------------------------------------------------------
 check($d['by_link'] === true && $d['recipients'] === [], 'an empty list is a share by link and code');
 check($S::recipientsText($d) === 'Anyone with the link and code', 'and is said in words, not left as an empty cell');
-check($d2['by_link'] === false && $d2['recipients'] === ['Sysadmin Twentyone(sysadmin.twentyone-e)'], 'a named recipient is listed');
-check($S::recipientsText($d2) === 'Sysadmin Twentyone(sysadmin.twentyone-e)', 'and shown by name');
+check($d2['by_link'] === false && $d2['recipients'] === ['Sysadmin Eighteen(sysadmin.eighteen-e)'], 'a named recipient is listed');
+check($S::recipientsText($d2) === 'Sysadmin Eighteen(sysadmin.eighteen-e)', 'and shown by name');
 $many = $share_named; $m = json_decode($many['message'], true); $m['users_display'] = ['A(a)', '', '  ', 'B(b)', ['x']]; $many['message'] = json_encode($m);
 check($S::describe($many, null, $NOW)['recipients'] === ['A(a)', 'B(b)'], 'blank and non-text entries in the list are dropped');
 check($S::recipientsText($S::describe($many, null, $NOW)) === 'A(a), B(b)', 'several recipients are joined');
@@ -134,10 +134,10 @@ check(array_column($S::find(['from' => '2026-10-01'], $NOW), 'id') === ['sh-2'],
 check(array_column($S::find(['to' => '2026-08-31'], $NOW), 'id') === ['sh-1'], 'to: includes the whole last day');
 check(array_column($S::find(['from' => '2026-10-12', 'to' => '2026-10-12'], $NOW), 'id') === ['sh-2'], 'one day');
 check(count($S::find(['from' => 'garbage', 'to' => '2026-13-45'], $NOW)) === 2, 'a date that is not a date is ignored, not applied');
-check(array_column($S::find(['q' => 'sysadmin.twentyone'], $NOW), 'id') === ['sh-2'], 'search finds a recipient, in any case');
+check(array_column($S::find(['q' => 'eighteen'], $NOW), 'id') === ['sh-2'], 'search finds a recipient, in any case');
 check(array_column($S::find(['q' => 'DB-PROD'], $NOW), 'id') === ['sh-2'], 'an asset');
 check(array_column($S::find(['q' => '77648721'], $NOW), 'id') === ['sh-1'], 'a session id');
-check(count($S::find(['q' => 'sysadmin.eight'], $NOW)) === 2, 'the creator');
+check(count($S::find(['q' => 'sysadmin.eight)'], $NOW)) === 2, 'the creator');
 check($S::find(['q' => 'nobody'], $NOW) === [], 'and nothing when nothing matches');
 
 $DB->logs = []; $DB->requests = [];
@@ -160,6 +160,57 @@ $echoes = preg_match_all("/echo [^;]*\\\$share\['(shared_by|session_asset|sessio
 check($echoes >= 5, "every value from JumpServer that is printed is printed through htmlescape() ($echoes places)");
 check(!preg_match("/echo[^;]*\\\$share\['(shared_by|session_asset|session_user|session_id)'\]\s*\./", str_replace('htmlescape($share', 'ESC($share', $page)),
       'none of them is concatenated into HTML without it');
+
+// --- findJoins(): the v4.5.0 table ------------------------------------------------------------
+// Unlike find(), this filters in SQL, because since v4.5.0 the event time is
+// a column. The shape of that query is what is pinned here: get the event
+// type or the entity restriction wrong and the page shows another entity's
+// joins, or none.
+// The no-active-entity check above left the session empty on purpose; put a
+// working viewer back before testing anything else.
+$_SESSION['glpiactiveentities'] = [6 => 6, 1 => 1];
+
+$join_row = static fn (string $id, string $when, string $who): array => [
+    'date_creation' => $when,
+    'event_type'    => 'session_join',
+    'username'      => $who,
+    'source_id'     => $id,
+    'message'       => json_encode([
+        'id' => $id, 'joiner' => ['name' => $who], 'session' => '94c7a001-01a2-4b33-a5c3-f8d538a7301d',
+        'remote_addr' => '10.0.2.41', 'login_from' => ['value' => 'WT', 'label' => 'Web Terminal'],
+        'is_success' => true, 'date_joined' => $when,
+    ]),
+];
+
+$DB->requests = [];
+$DB->logs     = [$join_row('jn-2', '2026-10-16 23:35:45', 'Sysadmin Sixteen'), $join_row('jn-1', '2026-10-15 08:00:00', 'Sysadmin Seventeen')];
+$DB->sessions = [['jms_id' => '94c7a001-01a2-4b33-a5c3-f8d538a7301d', 'asset' => 'db-prod-02', 'jms_user' => 'agus(agus)']];
+
+$joins = $S::findJoins([]);
+check(count($joins) === 2, 'the joins come back');
+check($joins[0]['session_asset'] === 'db-prod-02', 'a join is joined to its session, by the bare id it stores');
+
+$jq = $DB->requests[0];
+check($jq['WHERE']['event_type'] === 'session_join', 'only joins');
+check($jq['WHERE']['entities_id'] === [6, 1], 'only the viewer\'s entities');
+check($jq['ORDER'] === 'date_creation DESC', 'newest first, from the column - no sort through decoded JSON');
+check($jq['LIMIT'] === 5000, 'bounded like the shares');
+
+// The date window is a column comparison now, not a pass over the rows.
+$DB->requests = [];
+$S::findJoins(['from' => '2026-10-16', 'to' => '2026-10-16']);
+$bounds = array_values(array_filter($DB->requests[0]['WHERE'], 'is_array'));
+$texts  = array_map(static fn ($b) => ($b['date_creation'][0] ?? '') . ' ' . ($b['date_creation'][1] ?? ''), $bounds);
+check(in_array('>= 2026-10-16 00:00:00', $texts, true), 'from goes into the query as a column bound');
+check(in_array('<= 2026-10-16 23:59:59', $texts, true), 'and to covers the whole last day');
+
+$DB->requests = [];
+$S::findJoins(['from' => 'garbage', 'to' => '2026-13-45']);
+check(array_filter($DB->requests[0]['WHERE'], 'is_array') === [] || !str_contains(json_encode($DB->requests[0]['WHERE']), 'garbage'),
+      'a date that is not a date never reaches the query');
+
+check(array_column($S::findJoins(['q' => 'seventeen']), 'id') === ['jn-1'], 'search finds a joiner, in any case');
+check(array_column($S::findJoins(['q' => '10.0.2.41']), 'id') === ['jn-2', 'jn-1'], 'and the address they came from');
 
 echo $fails === 0 ? "\nALL PASS\n" : "\n$fails FAILURE(S)\n";
 exit($fails === 0 ? 0 : 1);

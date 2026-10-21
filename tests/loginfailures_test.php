@@ -94,8 +94,8 @@ check($bad['username'] === 'u' && $bad['ip'] === '1.2.3.4' && $bad['locked'] ===
 
 // --- find(): rows, filters, entities ----------------------------------------------
 $DB->logs = [
-    failure('svc.shared', 'Username/password check failed', '2026/10/10 07:00:00'),
-    failure('svc.shared', 'User is blocked', '2026/10/11 09:00:00'),
+    failure('itcc', 'Username/password check failed', '2026/10/10 07:00:00'),
+    failure('itcc', 'User is blocked', '2026/10/11 09:00:00'),
     failure('Budi', 'Username/password check failed', '2026/10/12 10:00:00', '10.0.0.9'),
 ];
 $all = $L::find([]);
@@ -104,7 +104,7 @@ $q = $DB->requests[0];
 check($q['WHERE']['event_type'] === 'user_login_failed' && $q['WHERE']['entities_id'] === [6, 1], 'only failed logins, only the viewer\'s entities');
 check($q['LIMIT'] === 5000, 'bounded');
 check(count($L::find(['only' => 'locked'])) === 1, 'lockouts only');
-check(array_column($L::find(['from' => '2026-10-11']), 'username') === ['Budi', 'svc.shared'], 'from: on the attempt\'s own time');
+check(array_column($L::find(['from' => '2026-10-11']), 'username') === ['Budi', 'itcc'], 'from: on the attempt\'s own time');
 check(count($L::find(['to' => '2026-10-10'])) === 1, 'to: includes the whole last day');
 check(count($L::find(['from' => 'junk', 'to' => '2026-13-45'])) === 3, 'a date that is not a date is ignored');
 check(count($L::find(['q' => 'BUDI'])) === 1, 'search finds a user in any case');
@@ -140,8 +140,8 @@ check(count($L::find(['reason' => 'Wrong password. You have 9 more attempt(s)'])
 check(count($L::find(['reason' => 'The account has been locked'])) === 1, 'and another reason lists only its own');
 
 $many = [];
-for ($i = 0; $i < 4; $i++) { $many[] = failure('svc.shared', 'Username/password check failed', '2026/10/1' . $i . ' 07:00:00', '10.0.0.' . $i); }
-$many[] = failure('svc.shared', 'User is blocked', '2026/10/14 07:00:00', '10.0.0.1');
+for ($i = 0; $i < 4; $i++) { $many[] = failure('Itcc', 'Username/password check failed', '2026/10/1' . $i . ' 07:00:00', '10.0.0.' . $i); }
+$many[] = failure('itcc', 'User is blocked', '2026/10/14 07:00:00', '10.0.0.1');
 $many[] = failure('other', 'x', '2026/10/14 07:00:00');
 $DB->logs = $many;
 $rep = $L::repeated($L::find([]));

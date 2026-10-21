@@ -7,9 +7,14 @@
  * Automatic action (CronTask) that pulls historical audit logs from the
  * JumpServer REST API (Access Key HTTP Signature auth) - the sole source
  * of events into glpi_plugin_jumpserver_logs (JumpServer has no
- * webhook/outbound-event feature to receive from instead). Pulls 3
+ * webhook/outbound-event feature to receive from instead). Pulls 4
  * endpoints: operating-logs (general admin/config actions), login-logs
- * (filtered to failures only), and session-sharings.
+ * (filtered to failures only), session-sharings (share links created) and
+ * session-join-records (people joining a shared session).
+ *
+ * Every row is stamped with the time its event happened on JumpServer, not
+ * the time the pull ran - see withEventTime() and the v4.5.0 note in
+ * hook.php.
  * -------------------------------------------------------------------------
  */
 
@@ -31,6 +36,29 @@ class PluginIntegrasipamanCron extends CommonDBTM
     private const OPERATING_LOGS_PATH  = '/api/v1/audits/operate-logs/';
     private const LOGIN_LOGS_PATH      = '/api/v1/audits/login-logs/';
     private const SESSION_SHARING_PATH = '/api/v1/terminal/session-sharings/';
+
+    // Session sharing is TWO endpoints, and conflating them is what made the
+    // Session Sharing card read 0 through a period with real activity
+    // (root-caused live on 2026-10-19):
+    //
+    //   session-sharings/      a share LINK that was created. It carries
+    //                          verify_code, expired_time and url. An active
+    //                          link reused a hundred times never adds a row
+    //                          - this instance has had exactly 2 since
+    //                          February. Useful as audit evidence of who
+    //                          opened a session up; useless as a measure of
+    //                          activity.
+    //   session-join-records/  someone actually JOINING a shared session.
+    //                          1046 rows on the same instance, and what a
+    //                          person means when they say a session was
+    //                          shared. Carries the joiner, their address and
+    //                          whether the join succeeded.
+    //
+    // Both are pulled. The card counts joins; the links stay for the audit
+    // trail. Neither honours date_from/date_to (measured: a one-day filter
+    // returned the full 1046), so the window is enforced client-side by
+    // fetchWindowed() exactly as it is for operate-logs.
+    private const SESSION_JOIN_PATH = '/api/v1/terminal/session-join-records/';
 
     /**
      * Describe automatic actions provided by this class, used on the
@@ -248,6 +276,33 @@ class PluginIntegrasipamanCron extends CommonDBTM
             $total_skipped  += $skipped;
         }
 
+        // --- Session joins (v4.5.0) ------------------------------------------
+        // The actual sharing activity: one row each time someone joined a
+        // shared session. date_from/date_to are ignored here too - measured
+        // live, a 2026-10-16 filter still returned all 1046 rows - so the
+        // window is enforced by fetchWindowed() and `order` is what makes the
+        // early stop engage. Sent on date_joined, which is the moment that
+        // matters; date_created on these entries is the same instant.
+        $join_query = ['order' => '-date_joined', 'date_to' => $end_date];
+        if ($start_date !== null) {
+            $join_query['date_from'] = $start_date;
+        }
+        $join_path    = self::SESSION_JOIN_PATH . '?' . http_build_query($join_query);
+        $join_entries = self::fetchWindowed(
+            $join_path, $credentials, 'date_joined', $start_date, $end_date, $task, 'session-join-records'
+        );
+
+        if ($join_entries === null) {
+            $any_fetch_failed = true;
+            $task->log('Failed to fetch session-join-records from the JumpServer API.');
+        } else {
+            $rows = array_map([self::class, 'mapSessionJoinEntry'], array_filter($join_entries, 'is_array'));
+            [$imported, $failed, $skipped] = self::importRows($rows, $task);
+            $total_imported += $imported;
+            $total_failed   += $failed;
+            $total_skipped  += $skipped;
+        }
+
         $task->log(sprintf(
             'JumpServer pull complete: %d imported, %d failed, %d already-imported skipped (%s).',
             $total_imported,
@@ -394,7 +449,7 @@ class PluginIntegrasipamanCron extends CommonDBTM
      *
      * @return array{0: int, 1: int, 2: int} [imported, failed, skipped]
      */
-    private static function importRows(array $rows, CronTask $task): array
+    private static function importRows(array $rows, ?CronTask $task = null): array
     {
         global $DB;
 
@@ -418,7 +473,11 @@ class PluginIntegrasipamanCron extends CommonDBTM
                 $imported++;
             } else {
                 $failed++;
-                $task->log(sprintf('Failed to insert log entry: %s', $DB->error()));
+                // No CronTask when called from the back-fill page, which
+                // reports its own totals on screen instead.
+                if ($task !== null) {
+                    $task->log(sprintf('Failed to insert log entry: %s', $DB->error()));
+                }
             }
         }
 
@@ -465,7 +524,7 @@ class PluginIntegrasipamanCron extends CommonDBTM
         // not pass/fail attempts, so every entry is simply "success".
         $status     = 'success';
 
-        return [
+        return self::withEventTime([
             'event_type' => mb_substr($event_type, 0, 50),
             'username'   => mb_substr($username, 0, 100),
             'asset_name' => mb_substr($asset_name, 0, 100),
@@ -473,7 +532,35 @@ class PluginIntegrasipamanCron extends CommonDBTM
             'status'     => mb_substr($status, 0, 20),
             'message'    => (string) json_encode($entry),
             'source_id'  => mb_substr((string) ($entry['id'] ?? ''), 0, 64),
-        ];
+        ], $entry['datetime'] ?? null);
+    }
+
+    /**
+     * Stamp a mapped row with the time its event happened on JumpServer
+     * (v4.5.0). Converted out of JumpServer's +0800 into GLPI's timezone by
+     * PluginIntegrasipamanApiWindow::sqlTime().
+     *
+     * When the entry carries no usable time the key is left off entirely, so
+     * the column's DEFAULT CURRENT_TIMESTAMP stands in and the row still
+     * answers date filters - an undated row that fell outside every window
+     * would be evidence quietly lost, which is worse than an approximate
+     * timestamp. The exact import time is kept in `date_import` either way,
+     * so the two can always be told apart afterwards.
+     *
+     * @param array<string, mixed> $row Mapped row, about to be inserted.
+     * @param mixed                $raw The entry's own timestamp value.
+     *
+     * @return array<string, mixed>
+     */
+    private static function withEventTime(array $row, $raw): array
+    {
+        $when = PluginIntegrasipamanApiWindow::sqlTime(is_scalar($raw) ? (string) $raw : null);
+
+        if ($when !== null) {
+            $row['date_creation'] = $when;
+        }
+
+        return $row;
     }
 
     /**
@@ -494,7 +581,7 @@ class PluginIntegrasipamanCron extends CommonDBTM
         $username   = (string) ($entry['username'] ?? '');
         $ip_address = (string) ($entry['ip'] ?? '');
 
-        return [
+        return self::withEventTime([
             'event_type' => 'user_login_failed',
             'username'   => mb_substr($username, 0, 100),
             'asset_name' => '',
@@ -502,7 +589,7 @@ class PluginIntegrasipamanCron extends CommonDBTM
             'status'     => 'failed',
             'message'    => (string) json_encode($entry),
             'source_id'  => mb_substr((string) ($entry['id'] ?? ''), 0, 64),
-        ];
+        ], $entry['datetime'] ?? null);
     }
 
     /**
@@ -510,12 +597,18 @@ class PluginIntegrasipamanCron extends CommonDBTM
      * /api/v1/terminal/session-sharings/ to a glpi_plugin_jumpserver_logs
      * row.
      *
-     * Verified live response shape (2026-08-26): {"id", "verify_code",
-     * "expired_time", "users_display": [...], "session": {"id"},
-     * "creator": {"id","name"}, "is_active", "date_created",
-     * "created_by"}. No asset/protocol field is available without a
-     * separate lookup on "session.id", so asset_name is left blank rather
-     * than making a second API call per shared session.
+     * This is the creation of a share LINK, not a join. See the comment on
+     * SESSION_JOIN_PATH for why that distinction is the whole point.
+     *
+     * Verified live response shape (re-checked 2026-10-19): {"id",
+     * "verify_code", "expired_time", "users_display": [...], "origin", "url",
+     * "session": {"id"}, "creator": {"id","name"}, "org_id", "org_name",
+     * "is_active", "date_created", "date_updated", "created_by"}. The
+     * "origin", "url", "org_id", "org_name" and "date_updated" fields are
+     * newer than the 2026-08-26 shape this docblock first recorded. No
+     * asset/protocol field is available without a separate lookup on
+     * "session.id", so asset_name is left blank rather than making a second
+     * API call per shared session.
      *
      * @param array<string, mixed> $entry Decoded API entry.
      *
@@ -525,7 +618,7 @@ class PluginIntegrasipamanCron extends CommonDBTM
     {
         $username = (string) ($entry['created_by'] ?? '');
 
-        return [
+        return self::withEventTime([
             'event_type' => 'session_share',
             'username'   => mb_substr($username, 0, 100),
             'asset_name' => '',
@@ -533,6 +626,125 @@ class PluginIntegrasipamanCron extends CommonDBTM
             'status'     => !empty($entry['is_active']) ? 'success' : 'expired',
             'message'    => (string) json_encode($entry),
             'source_id'  => mb_substr((string) ($entry['id'] ?? ''), 0, 64),
+        ], $entry['date_created'] ?? null);
+    }
+
+    /**
+     * Import every session-join record JumpServer still holds, ignoring the
+     * cursor (v4.5.0). One-shot, run by hand from front/backfilljoins.php.
+     *
+     * Why this exists: the hourly pull only reaches back to the cursor, so
+     * the day this endpoint was first pulled, everything older than that
+     * moment was out of reach forever. On this instance that was 1046 joins
+     * - the entire history of the feature, including the activity that
+     * started this whole investigation. A back-fill is the only way to get
+     * them, and it is cheap precisely because of the trait that makes the
+     * normal pull awkward: the endpoint ignores date filters and hands back
+     * everything, 100 rows a page.
+     *
+     * Safe to run twice. importRows() skips any source_id already present,
+     * so a second run imports nothing and reports it as skipped.
+     *
+     * Runs against the CURRENT connection, which the caller chooses.
+     *
+     * @return array{imported:int, failed:int, skipped:int, fetched:int, complete:bool}
+     *         complete is false when paging was cut short (a page failed, or
+     *         MAX_PAGES was reached) - the counts are then a partial result
+     *         and the caller must say so rather than reporting success.
+     */
+    public static function backfillSessionJoins(): array
+    {
+        $connection = PluginIntegrasipamanConnection::current();
+
+        if ($connection === null) {
+            return ['imported' => 0, 'failed' => 0, 'skipped' => 0, 'fetched' => 0, 'complete' => false];
+        }
+
+        [$base_url, $access_key_id, $access_key_secret, $org_id] = $connection->credentials();
+
+        if ($base_url === '' || $access_key_id === '' || $access_key_secret === '') {
+            return ['imported' => 0, 'failed' => 0, 'skipped' => 0, 'fetched' => 0, 'complete' => false];
+        }
+
+        $imported = 0;
+        $failed   = 0;
+        $skipped  = 0;
+        $fetched  = 0;
+
+        // Page-at-a-time, importing each page before fetching the next, so a
+        // long history never sits in memory all at once and an interrupted
+        // run still leaves everything it had already imported.
+        $complete = PluginIntegrasipamanJmsApi::signedGetEach(
+            self::SESSION_JOIN_PATH,
+            $base_url,
+            $access_key_id,
+            $access_key_secret,
+            $org_id,
+            static function (array $page) use (&$imported, &$failed, &$skipped, &$fetched): void {
+                $fetched += count($page);
+                $rows     = array_map([self::class, 'mapSessionJoinEntry'], array_filter($page, 'is_array'));
+                [$i, $f, $s] = self::importRows($rows);
+                $imported += $i;
+                $failed   += $f;
+                $skipped  += $s;
+            }
+        );
+
+        return [
+            'imported' => $imported,
+            'failed'   => $failed,
+            'skipped'  => $skipped,
+            'fetched'  => $fetched,
+            'complete' => $complete,
         ];
+    }
+
+    /**
+     * Map one entry from /api/v1/terminal/session-join-records/ - someone
+     * joining a session that was shared with them (v4.5.0).
+     *
+     * Verified live response shape (2026-10-19): {"id", "joiner_display",
+     * "verify_code", "remote_addr", "login_from": {"value","label"},
+     * "reason", "action_permission", "session", "sharing", "joiner":
+     * {"id","name"}, "org_id", "org_name", "is_success", "is_finished",
+     * "date_joined", "date_left", "date_created", "date_updated",
+     * "created_by"}.
+     *
+     * Two field choices worth stating, because the obvious reading of each is
+     * the wrong one:
+     *
+     *   username  is the JOINER, not `created_by`. On these entries
+     *             `created_by` is the terminal component that wrote the
+     *             record (e.g. "[Terminal]-PAM-SERVER-jms_terminal-kB"), which is
+     *             machinery, not a person. The person is `joiner.name`.
+     *   status    'failed' covers a refused join as well as a failed one.
+     *             `reason` says which, and it stays readable in the stored
+     *             JSON rather than being flattened into a 20-character
+     *             column.
+     *
+     * `verify_code` is the secret that lets a holder into the session. It
+     * arrives inside the entry and is therefore stored with it, exactly as
+     * for share links; no screen or export in this plugin reads it.
+     *
+     * @param array<string, mixed> $entry Decoded API entry.
+     *
+     * @return array<string, string>
+     */
+    private static function mapSessionJoinEntry(array $entry): array
+    {
+        $joiner = trim((string) ($entry['joiner']['name'] ?? ''));
+        if ($joiner === '') {
+            $joiner = trim((string) ($entry['joiner_display'] ?? ''));
+        }
+
+        return self::withEventTime([
+            'event_type' => 'session_join',
+            'username'   => mb_substr($joiner, 0, 100),
+            'asset_name' => '',
+            'ip_address' => mb_substr((string) ($entry['remote_addr'] ?? ''), 0, 45),
+            'status'     => !empty($entry['is_success']) ? 'success' : 'failed',
+            'message'    => (string) json_encode($entry),
+            'source_id'  => mb_substr((string) ($entry['id'] ?? ''), 0, 64),
+        ], $entry['date_joined'] ?? null);
     }
 }

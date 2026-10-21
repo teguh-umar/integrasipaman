@@ -79,6 +79,17 @@ class PluginIntegrasipamanPbiConnection
      *
      * @return array<int, array<string, mixed>>|null
      */
+    /**
+     * Whether a call on this instance has already failed to reach the
+     * database. Lets a page that asks for several views say "the database
+     * is unreachable" once, instead of repeating it under every section
+     * heading (v4.5.0).
+     */
+    public function failedToConnect(): bool
+    {
+        return $this->connectionFailed;
+    }
+
     public function fetchRows(string $view, int $limit): ?array
     {
         if (!in_array($view, self::ALLOWED_VIEWS, true)) {

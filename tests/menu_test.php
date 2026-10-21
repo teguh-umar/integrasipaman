@@ -188,8 +188,10 @@ foreach (glob($front . '/*.php') as $file) {
     check(preg_match("/Html::header\([^;]*''\s*,\s*'integrasipaman'\s*,/", $src) === 0,
           "$name: no header left in the old 'integrasipaman' sector");
 }
-check(count($used) > 0 && array_sum(array_map('count', $used)) === 16,
-      'all 16 chrome-rendering front controllers were found');
+// 17 since v4.5.0: front/backfilljoins.php, the one-shot session-join
+// back-fill, joined the 'setup' option.
+check(count($used) > 0 && array_sum(array_map('count', $used)) === 17,
+      'all 17 chrome-rendering front controllers were found');
 foreach ($used as $key => $files) {
     if ($key === '$tab') {
         continue;

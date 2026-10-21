@@ -423,8 +423,20 @@ CSS;
     /**
      * Provider for the "Session Sharing" bigNumber card. Called by GLPI
      * core as "PluginIntegrasipamanDashboard::provideSessionSharing".
-     * Counts rows with event_type='session_share', populated by
-     * inc/cron.class.php's pull of /api/v1/terminal/session-sharings/.
+     *
+     * Counts rows with event_type='session_join' - each time someone joined
+     * a shared session - from inc/cron.class.php's pull of
+     * /api/v1/terminal/session-join-records/.
+     *
+     * v4.5.0 changed what this counts, and the reason is worth keeping:
+     * until then it counted 'session_share', the creation of a share LINK.
+     * This instance had created two links since February and reused them
+     * ever since, so the card read 0 through weeks that held hundreds of
+     * real joins. Counting links measured how often someone opened a session
+     * up; counting joins measures how often a session was actually shared,
+     * which is the question the card is on the dashboard to answer. The
+     * links are still pulled and still listed on the page this card links
+     * to - "who opened a session up" is its own audit finding.
      *
      * @param array<string, mixed> $params Includes 'apply_filters' when the
      *                                     user has an active dashboard-level
@@ -438,7 +450,7 @@ CSS;
             return ['number' => 0, 'label' => __('JumpServer Session Sharing', 'integrasipaman'), 'icon' => 'ti ti-users'];
         }
 
-        $where = self::withEventTypeFilter($params, 'session_share');
+        $where = self::withEventTypeFilter($params, 'session_join');
 
         $number = self::countTotal($where);
 
@@ -446,7 +458,7 @@ CSS;
             'number' => $number,
             'icon'   => 'ti ti-users',
             'url'    => self::pageUrl('sessionsharing.php', self::windowQuery($params)),
-        ] + self::labelWithDelta(__('JumpServer Session Sharing', 'integrasipaman'), $params, 'session_share', $number);
+        ] + self::labelWithDelta(__('JumpServer Session Sharing', 'integrasipaman'), $params, 'session_join', $number);
     }
 
     /**

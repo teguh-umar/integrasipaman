@@ -54,6 +54,33 @@ class PluginIntegrasipamanDashboard extends CommonGLPI
     private const CHART_GROUP_LIMIT = 8;
 
     /**
+     * The operate-log `resource_type` values that really are an asset
+     * (v4.5.2). Everything else JumpServer can act on - a user, a login
+     * session, a permission rule, a node, an access key - is not, however
+     * much its display string may look like one.
+     *
+     * This list is deliberately an explicit allow-list of types rather than
+     * a pattern over the display string. The bug this constant exists to fix
+     * was caused by trusting the string: a UserSession renders as
+     * "Name(login)(10.0.242.126)", which is indistinguishable by shape from
+     * an asset's "VM-APP-07(10.0.0.160)".
+     *
+     * Two near misses are left out on purpose, both verified against live
+     * data (probe_resource_shape.php, 2026-10-22):
+     *   Asset Authorization  an authorization RULE, often named after the
+     *                        server it covers ("SVR-Database One").
+     *   Account              an account ON an asset ("developers(VM-DEV2-
+     *                        SAMPLE)"). The asset is in the parens, but
+     *                        digging it out is the same string-guessing.
+     *
+     * Matched against the label JumpServer sends. If a future version or a
+     * non-English locale renames these, rows stop being recognised as assets
+     * and fall back to "not an asset" - under-claiming, which is the safe
+     * direction for an audit screen.
+     */
+    private const ASSET_RESOURCE_TYPES = ['Asset', 'Host'];
+
+    /**
      * Safety cap on rows returned for export (front/export.php), so a very
      * wide filter/date range can never pull an unbounded result set into
      * memory in one request.
@@ -493,11 +520,23 @@ CSS;
      */
     public static function recentEntry(array $row): array
     {
-        $when    = strtotime((string) ($row['date_creation'] ?? ''));
-        $user    = trim((string) ($row['username'] ?? ''));
-        $asset   = trim((string) ($row['asset_name'] ?? ''));
-        $status  = (string) ($row['status'] ?? '');
-        $subject = ($user !== '' ? $user : '-') . '@' . ($asset !== '' ? $asset : '-');
+        $when     = strtotime((string) ($row['date_creation'] ?? ''));
+        $user     = trim((string) ($row['username'] ?? ''));
+        $status   = (string) ($row['status'] ?? '');
+        $resource = self::resourceParts($row);
+
+        // "user@asset" only where there IS an asset. Until v4.5.2 this read
+        // asset_name unconditionally, so a UserSession row - 863 of 1293 on
+        // this instance - rendered as "Sysadmin Nineteen(...)@Sysadmin Nineteen(...)
+        // (10.0.242.126)": the same person on both sides of an "@" that
+        // claims a connection to a machine. The card has no room for a type
+        // column, so a non-asset resource is simply left off; the full
+        // picture is on front/export.php, which shows type and resource
+        // side by side.
+        $subject = $user !== '' ? $user : '-';
+        if ($resource['is_asset']) {
+            $subject .= '@' . $resource['value'];
+        }
 
         $entry = [
             'number' => $when === false ? '-' : date('d/m H:i', $when),
@@ -509,6 +548,69 @@ CSS;
         }
 
         return $entry;
+    }
+
+    /**
+     * What a log row's `asset_name` column actually refers to (v4.5.2).
+     *
+     * `asset_name` is filled by PluginIntegrasipamanCron::mapOperatingLogEntry()
+     * from the operate-log's `resource` field, and `resource` is JumpServer's
+     * generic "object that was acted on" - an asset only sometimes. Live
+     * figures from this instance (probe_resource_shape.php, 2026-10-22, 1293
+     * operate-log rows in 30 days):
+     *
+     *   User Session         863    a person's web/console login session
+     *   User                 252    a person
+     *   Asset Authorization   50    a permission rule
+     *   Host                  38    AN ASSET
+     *   Account               32    an account on an asset
+     *   ...11 more types      58    node, role binding, access key, ...
+     *   Asset                  3    AN ASSET
+     *
+     * So the column was an asset in 41 of 1293 rows, and a person in 1115.
+     *
+     * The type is read from the JSON the row already carries in `message` -
+     * every operate-log entry has `resource_type` (1293 of 1293), so this
+     * costs no schema change and no second API call. Rows from the other
+     * feeds (session_join, user_login_failed) carry no resource at all and
+     * report none rather than being given a wrong one.
+     *
+     * For rows that ARE an asset the value already reads "name(IP)" -
+     * "VM-APP-07(10.0.0.160)" - so nothing is reformatted here.
+     *
+     * @param array<string, mixed> $row A row as fetchRows() returns it; must
+     *                                  include `message` for the type to be
+     *                                  known.
+     *
+     * @return array{type: string, value: string, is_asset: bool}
+     */
+    public static function resourceParts(array $row): array
+    {
+        $value = trim((string) ($row['asset_name'] ?? ''));
+        $type  = '';
+
+        $data = json_decode((string) ($row['message'] ?? ''), true);
+
+        if (is_array($data)) {
+            $raw = $data['resource_type'] ?? null;
+
+            // `action` already arrives as {"value","label"} on this API; if
+            // resource_type ever does too, prefer the label - that is what
+            // the allow-list and the screen are both written against.
+            if (is_array($raw)) {
+                $raw = $raw['label'] ?? $raw['value'] ?? null;
+            }
+
+            if (is_scalar($raw)) {
+                $type = trim((string) $raw);
+            }
+        }
+
+        return [
+            'type'     => $type,
+            'value'    => $value,
+            'is_asset' => $type !== '' && in_array($type, self::ASSET_RESOURCE_TYPES, true),
+        ];
     }
 
     /**

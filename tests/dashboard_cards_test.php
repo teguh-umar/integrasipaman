@@ -160,15 +160,24 @@ namespace {
     // --- the list ------------------------------------------------------------------------
     $row = ['date_creation' => '2026-10-12 09:14:00', 'event_type' => 'session_share_join', 'username' => 'agus.prasetyo',
             'asset_name' => 'db-prod-02', 'status' => 'success'];
+    // v4.5.2: the "@asset" half is appended only where the row's resource_type
+    // says the object really is an asset. This fixture carries no `message`, so
+    // the type is unknown - and an unknown type must not be claimed as an asset.
+    // See resource_type_test.php for the full matrix against live shapes.
     $e = $D::recentEntry($row);
-    check($e['number'] === '12/10 09:14' && $e['label'] === 'session_share_join - agus.prasetyo@db-prod-02'
-          && $e['icon'] === 'ti ti-check' && !isset($e['color']), 'a successful event: time, event, user@asset, a check, no colour');
+    check($e['number'] === '12/10 09:14' && $e['label'] === 'session_share_join - agus.prasetyo'
+          && $e['icon'] === 'ti ti-check' && !isset($e['color']), 'a successful event: time, event, user, a check, no colour');
+    $e = $D::recentEntry(['message' => '{"resource_type":"Host"}'] + $row);
+    check($e['label'] === 'session_share_join - agus.prasetyo@db-prod-02',
+          'a row whose resource really is an asset still reads user@asset');
     $e = $D::recentEntry(['status' => 'failed'] + $row);
     check($e['icon'] === 'ti ti-x' && $e['color'] === '#d63939', 'a failed one: a cross, in red');
     $e = $D::recentEntry(['status' => 'expired'] + $row);
     check($e['icon'] === 'ti ti-x', 'anything that is not a success is marked');
     $e = $D::recentEntry(['username' => '', 'asset_name' => ''] + $row);
-    check($e['label'] === 'session_share_join - -@-', 'missing names show a dash instead of nothing');
+    check($e['label'] === 'session_share_join - -', 'a missing user name shows a dash instead of nothing');
+    $e = $D::recentEntry(['username' => '', 'message' => '{"resource_type":"Host"}'] + $row);
+    check($e['label'] === 'session_share_join - -@db-prod-02', 'and still keeps a known asset beside it');
     $e = $D::recentEntry(['date_creation' => 'garbage'] + $row);
     check($e['number'] === '-', 'an unreadable time shows a dash');
 

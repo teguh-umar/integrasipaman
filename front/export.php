@@ -88,7 +88,19 @@ function jumpserver_export_columns(): array
         __('Timestamp', 'integrasipaman'),
         __('Event Type', 'integrasipaman'),
         __('Username', 'integrasipaman'),
-        __('Asset Target', 'integrasipaman'),
+        // v4.5.2: was a single "Asset Target" column fed straight from
+        // asset_name. That column was an asset in 3% of rows and a person in
+        // 86% - see PluginIntegrasipamanDashboard::resourceParts(). Splitting
+        // it in two is what makes every row honest: the type says what the
+        // object is, the value says which one.
+        __('Resource Type', 'integrasipaman'),
+        __('Resource', 'integrasipaman'),
+        // No separate "Asset" column: it was tried in 4.5.2-rc2 and dropped.
+        // For an asset, `resource` already reads "VM-APP-07(10.0.0.160)",
+        // so the column was a verbatim copy of Resource on the 3% of rows
+        // that had one and empty on the other 97% - duplication, not
+        // information. Narrowing the log to asset activity is a filter on
+        // Resource Type, not a column of its own.
         __('IP Address', 'integrasipaman'),
         __('Message', 'integrasipaman'),
     ];
@@ -104,11 +116,14 @@ function jumpserver_export_columns(): array
  */
 function jumpserver_export_row_values(array $row): array
 {
+    $resource = PluginIntegrasipamanDashboard::resourceParts($row);
+
     return [
         (string) ($row['date_creation'] ?? ''),
         (string) ($row['event_type'] ?? ''),
         (string) ($row['username'] ?? ''),
-        (string) ($row['asset_name'] ?? ''),
+        $resource['type'],
+        $resource['value'],
         (string) ($row['ip_address'] ?? ''),
         (string) ($row['message'] ?? ''),
     ];
@@ -183,7 +198,8 @@ function jumpserver_export_send_print_view(array $rows, array $options): void
 /**
  * Send the default, browsable HTML view of the dataset: a standalone page
  * (not a download) styled like the plugin's dashboard cards, with a
- * Date/Event/User/Asset/IP/Status table (status shown as a colored pill)
+ * Date/Event/User/Type/Resource/IP/Status table (status shown as a colored
+ * pill, the resource type as a pill that is tinted when it is a real asset)
  * and links to the CSV/Excel/PDF export formats that carry the same
  * active filters over as query parameters.
  *
@@ -244,6 +260,14 @@ function jumpserver_export_send_view(array $rows, array $options): void
             display: inline-flex; align-items: center; gap: 0.35rem;
             font-size: 0.72rem; font-weight: 700; padding: 0.15rem 0.55rem; border-radius: 999px;
         }
+        .type-pill {
+            display: inline-block; font-size: 0.72rem; font-weight: 600;
+            padding: 0.15rem 0.55rem; border-radius: 6px;
+            color: var(--muted); background: var(--surface-sunken);
+            border: 1px solid var(--border); white-space: nowrap;
+        }
+        .type-pill.is-asset { color: var(--primary); background: #eaf2fc; border-color: #c7dcf5; }
+        .dim { color: var(--muted); }
         .status-pill.success { color: var(--success); background: var(--success-soft); }
         .status-pill.failed { color: var(--danger); background: var(--danger-soft); }
         .status-pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
@@ -272,7 +296,8 @@ function jumpserver_export_send_view(array $rows, array $options): void
         __('Date', 'integrasipaman'),
         __('Event', 'integrasipaman'),
         __('User', 'integrasipaman'),
-        __('Asset', 'integrasipaman'),
+        __('Type', 'integrasipaman'),
+        __('Resource', 'integrasipaman'),
         __('IP Address', 'integrasipaman'),
         __('Status', 'integrasipaman'),
     ] as $col) {
@@ -281,18 +306,25 @@ function jumpserver_export_send_view(array $rows, array $options): void
     echo '</tr></thead><tbody>';
 
     if (empty($rows)) {
-        echo '<tr><td colspan="6">' . htmlescape(__('No data for the selected filters.', 'integrasipaman')) . '</td></tr>';
+        echo '<tr><td colspan="7">' . htmlescape(__('No data for the selected filters.', 'integrasipaman')) . '</td></tr>';
     }
 
     foreach ($rows as $row) {
         $status       = (string) ($row['status'] ?? '');
         $status_class = $status === 'failed' ? 'failed' : 'success';
+        $resource     = PluginIntegrasipamanDashboard::resourceParts($row);
 
         echo '<tr>';
         echo '<td class="mono">' . htmlescape((string) ($row['date_creation'] ?? '')) . '</td>';
         echo '<td>' . htmlescape((string) ($row['event_type'] ?? '')) . '</td>';
         echo '<td>' . htmlescape((string) ($row['username'] ?? '')) . '</td>';
-        echo '<td>' . htmlescape((string) ($row['asset_name'] ?? '')) . '</td>';
+        // An asset is worth spotting at a glance on an audit screen: it is
+        // the 3% of rows that name a machine someone touched.
+        echo '<td>' . ($resource['type'] === ''
+            ? '<span class="dim">' . htmlescape(__('-', 'integrasipaman')) . '</span>'
+            : '<span class="type-pill' . ($resource['is_asset'] ? ' is-asset' : '') . '">'
+                . htmlescape($resource['type']) . '</span>') . '</td>';
+        echo '<td>' . htmlescape($resource['value']) . '</td>';
         echo '<td class="mono">' . htmlescape((string) ($row['ip_address'] ?? '')) . '</td>';
         echo '<td><span class="status-pill ' . $status_class . '">' . htmlescape($status) . '</span></td>';
         echo '</tr>';

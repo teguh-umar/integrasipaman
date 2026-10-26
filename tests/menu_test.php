@@ -115,7 +115,7 @@ check($options_rw['report']['page'] === $BASE . '/pbi.php?tab=report',
       'the report option carries the tab that front/pbi.php reads');
 check($options_rw['provisioning']['page'] === $BASE . '/provisioning.php',
       'provisioning points at its own controller');
-check($options_rw['session']['page'] === $BASE . '/sessionsharing.php',
+check($options_rw['session']['page'] === $BASE . '/session.php',
       'the Session option points at the page that carries both of its tabs, behind the report right');
 
 // --- provisioning-only: neither config nor report, just the queue -----------

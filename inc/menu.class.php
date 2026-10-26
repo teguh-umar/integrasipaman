@@ -115,7 +115,11 @@ class PluginIntegrasipamanMenu extends CommonGLPI
             // The nesting is inside the page because the suite sub-nav has no
             // second level and lib/pgnsuite/Menu.php is shared byte-for-byte
             // with every other plugin (orchestrator ruling, 2026-10-22).
-            $session = self::BASE . '/sessionsharing.php';
+            // 4.7.0: session.php, not sessionsharing.php - the Log Session
+            // tab is a Search over PluginIntegrasipamanSession, and core
+            // derives an itemtype's URLs from the class name. The old file
+            // remains as a redirect for links made before 4.7.0.
+            $session = self::BASE . '/session.php';
             $options['session'] = [
                 'title' => __('Session', 'integrasipaman'),
                 'page'  => $session,

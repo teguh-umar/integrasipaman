@@ -493,7 +493,7 @@ CSS;
             // v4.6.0: the page now opens on its "Log Session" tab by default,
             // so this card has to name the tab it means or it would land the
             // reader on a different dataset than the number they clicked.
-            'url'    => self::pageUrl('sessionsharing.php', self::windowQuery($params) + ['tab' => 'sharing']),
+            'url'    => self::pageUrl('session.php', self::windowQuery($params) + ['tab' => 'sharing']),
         ] + self::labelWithDelta(__('JumpServer Session Sharing', 'integrasipaman'), $params, 'session_join', $number);
     }
 

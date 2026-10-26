@@ -23,7 +23,7 @@
 // row in glpi_plugins. Confirmed by comparison against a working
 // reference plugin on the target instance, which has no such guard.
 
-define('PLUGIN_INTEGRASIPAMAN_VERSION', '4.6.0');
+define('PLUGIN_INTEGRASIPAMAN_VERSION', '4.7.0');
 
 // Minimum GLPI version, inclusive
 define('PLUGIN_INTEGRASIPAMAN_MIN_GLPI', '10.0.0');
@@ -77,6 +77,11 @@ function plugin_init_integrasipaman(): void
         Plugin::registerClass('PluginIntegrasipamanRiskEval');
         Plugin::registerClass('PluginIntegrasipamanAssetMap');
         Plugin::registerClass('PluginIntegrasipamanUserMap');
+        // 4.7.0: the searchable view of glpi_plugin_jumpserver_sessions, so
+        // front/session.php's Log Session tab can be a core Search. Owns no
+        // table of its own and is read-only; the rows are JumpServer's audit
+        // record, pulled by cronPull_terminal_activity().
+        Plugin::registerClass('PluginIntegrasipamanSession');
         // "PAMAN" tab on the core Computer itemtype: is this machine in the
         // bastion, and does PAMAN still agree with GLPI about it. Same rule
         // as the tabs below - load before registerClass(), which resolves

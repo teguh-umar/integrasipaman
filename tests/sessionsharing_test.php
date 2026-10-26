@@ -114,7 +114,7 @@ check($d2['session_asset'] === '' && $d2['session_id'] === '94c7a001-01a2-4b33-a
 
 // --- the secret ------------------------------------------------------------------------------------
 check(!str_contains(json_encode($d) . json_encode($d2) . json_encode($ds), 'SECRET'), 'verify_code is not in the result');
-check(!str_contains(file_get_contents(__DIR__ . '/../front/sessionsharing.php'), 'verify_code'), 'and the page and the export never name it');
+check(!str_contains(file_get_contents(__DIR__ . '/../front/session.php'), 'verify_code'), 'and the page and the export never name it');
 
 // --- find(): rows, filters, entities ---------------------------------------------------------------
 $DB->logs     = [$share_by_link, $share_named];
@@ -149,7 +149,7 @@ $S::find([], $NOW);
 check($DB->requests[0]['WHERE']['entities_id'] === [-1], 'a session with no active entity reads nothing');
 
 // --- the page ------------------------------------------------------------------------------------------
-$page = file_get_contents(__DIR__ . '/../front/sessionsharing.php');
+$page = file_get_contents(__DIR__ . '/../front/session.php');
 check(str_contains($page, 'PluginIntegrasipamanProfile::RIGHT_REPORT, READ'), 'the page needs the report right');
 // v4.6.0: each tab guards its own export, so a format=csv meant for one tab
 // cannot be answered by the other's block. What matters is unchanged - the

@@ -151,11 +151,20 @@ check($DB->requests[0]['WHERE']['entities_id'] === [-1], 'a session with no acti
 // --- the page ------------------------------------------------------------------------------------------
 $page = file_get_contents(__DIR__ . '/../front/sessionsharing.php');
 check(str_contains($page, 'PluginIntegrasipamanProfile::RIGHT_REPORT, READ'), 'the page needs the report right');
-check(preg_match('/if \(\(\$_GET\[\'format\'\] \?\? \'\'\) === \'csv\'\) \{.*?exit;/s', $page) === 1
-      && strpos($page, "=== 'csv'") < strpos($page, 'Html::header('), 'the CSV is sent before any HTML, from the same list');
+// v4.6.0: each tab guards its own export, so a format=csv meant for one tab
+// cannot be answered by the other's block. What matters is unchanged - the
+// CSV leaves before a byte of HTML does.
+// The header position is matched at the start of a line, not with a bare
+// strpos: a COMMENT mentioning Html::header() sits above the export blocks
+// and would otherwise be found first, quietly passing this check no matter
+// where the real call was.
+preg_match('/^Html::header\(/m', $page, $_h, PREG_OFFSET_CAPTURE);
+check(preg_match('/if \(\$tab === \'sharing\' && \(\$_GET\[\'format\'\] \?\? \'\'\) === \'csv\'\) \{.*?exit;/s', $page) === 1
+      && $_h !== [] && strpos($page, "=== 'csv'") < $_h[0][1], 'the CSV is sent before any HTML, from the same list');
 check(str_contains($page, 'PluginIntegrasipamanExporter::sendCsv('), 'through the exporter that neutralises spreadsheet formulas');
-check(preg_match("/Menu::SECTOR,\s*'integrasipaman',\s*'sessionsharing'\s*\);\s*\\\\GlpiPlugin\\\\Pgnsuite\\\\Menu::renderSubNav\('integrasipaman', 'sessionsharing'\);/", $page) === 1,
-      'it is in the shared sector with its own sub-nav entry');
+// v4.6.0: one option, 'session', covering both of the page's in-page tabs.
+check(preg_match("/Menu::SECTOR,\s*'integrasipaman',\s*'session'\s*\);\s*\\\\GlpiPlugin\\\\Pgnsuite\\\\Menu::renderSubNav\('integrasipaman', 'session'\);/", $page) === 1,
+      'it is in the shared sector under the Session option');
 $echoes = preg_match_all("/echo [^;]*\\\$share\['(shared_by|session_asset|session_user|session_id|shared_at|expires_at)'\][^;]*;/", $page, $mm);
 check($echoes >= 5, "every value from JumpServer that is printed is printed through htmlescape() ($echoes places)");
 check(!preg_match("/echo[^;]*\\\$share\['(shared_by|session_asset|session_user|session_id)'\]\s*\./", str_replace('htmlescape($share', 'ESC($share', $page)),

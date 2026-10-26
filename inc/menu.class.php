@@ -109,11 +109,18 @@ class PluginIntegrasipamanMenu extends CommonGLPI
                 'links' => ['search' => self::BASE . '/loginfailures.php'],
             ];
             // 4.2.0: who shared a session, with whom. Same right as the report.
-            $options['sessionsharing'] = [
-                'title' => __('Session sharing', 'integrasipaman'),
-                'page'  => self::BASE . '/sessionsharing.php',
-                'icon'  => 'ti ti-share',
-                'links' => ['search' => self::BASE . '/sessionsharing.php'],
+            // 4.6.0: renamed from 'sessionsharing' to 'session' and widened -
+            // the page now carries two in-page tabs, "Log Session" (the
+            // terminal sessions) and "Session Sharing" (what it used to be).
+            // The nesting is inside the page because the suite sub-nav has no
+            // second level and lib/pgnsuite/Menu.php is shared byte-for-byte
+            // with every other plugin (orchestrator ruling, 2026-10-22).
+            $session = self::BASE . '/sessionsharing.php';
+            $options['session'] = [
+                'title' => __('Session', 'integrasipaman'),
+                'page'  => $session,
+                'icon'  => 'ti ti-terminal',
+                'links' => ['search' => $session],
             ];
         }
 

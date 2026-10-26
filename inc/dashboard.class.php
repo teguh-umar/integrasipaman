@@ -143,7 +143,7 @@ class PluginIntegrasipamanDashboard extends CommonGLPI
 
         $cards[self::CARD_TOTAL_ID] = [
             'widgettype' => ['bigNumber'],
-            'label'      => __('JumpServer Total Events', 'integrasipaman'),
+            'label'      => __('JumpServer All Events', 'integrasipaman'),
             'group'      => $group,
             'filters'    => $filters,
             // Must be a "Class::method" string, not a Closure: GLPI core
@@ -254,8 +254,14 @@ class PluginIntegrasipamanDashboard extends CommonGLPI
 
         echo '</div>';
 
+        // v4.6.0: say outright that these four tiles overlap. "All Events" is
+        // a bare COUNT(*) over the log with no event_type filter, so it
+        // already CONTAINS the login failures and the session sharing shown
+        // beside it - on this instance, 1410 rows of which 32 and 85 are the
+        // next two tiles. Read as a breakdown, the strip would not add up,
+        // and a reader would reasonably conclude a number was wrong.
         echo '<p class="text-muted mb-4">' . htmlescape(__(
-            'Totals from this plugin\'s own JumpServer event log (last 30 days). The detail tables below are read live from the PBI reporting database and may differ in coverage.',
+            'Totals from this plugin\'s own JumpServer event log (last 30 days). "All Events" counts every event in the window, so the other tiles are subsets of it, not separate shares of it. The detail tables below are read live from the PBI reporting database and may differ in coverage.',
             'integrasipaman'
         )) . '</p>';
 
@@ -308,7 +314,7 @@ CSS;
     public static function provideTotalEvents(array $params = []): array
     {
         if (!self::canViewCards()) {
-            return ['number' => 0, 'label' => __('JumpServer Total Events', 'integrasipaman'), 'icon' => 'ti ti-terminal-2'];
+            return ['number' => 0, 'label' => __('JumpServer All Events', 'integrasipaman'), 'icon' => 'ti ti-terminal-2'];
         }
 
         $number = self::countTotal(self::resolveWhereClause($params));
@@ -316,7 +322,7 @@ CSS;
         return [
             'number' => $number,
             'icon'   => 'ti ti-terminal-2',
-        ] + self::labelWithDelta(__('JumpServer Total Events', 'integrasipaman'), $params, null, $number);
+        ] + self::labelWithDelta(__('JumpServer All Events', 'integrasipaman'), $params, null, $number);
     }
 
     /**
@@ -484,7 +490,10 @@ CSS;
         return [
             'number' => $number,
             'icon'   => 'ti ti-users',
-            'url'    => self::pageUrl('sessionsharing.php', self::windowQuery($params)),
+            // v4.6.0: the page now opens on its "Log Session" tab by default,
+            // so this card has to name the tab it means or it would land the
+            // reader on a different dataset than the number they clicked.
+            'url'    => self::pageUrl('sessionsharing.php', self::windowQuery($params) + ['tab' => 'sharing']),
         ] + self::labelWithDelta(__('JumpServer Session Sharing', 'integrasipaman'), $params, 'session_join', $number);
     }
 

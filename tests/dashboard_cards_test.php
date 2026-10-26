@@ -91,19 +91,19 @@ namespace {
     // then the period before. The second must equal the first or no change is shown.
     $DB->counts = [120, 120, 100];
     $r = $D::provideTotalEvents([]);
-    check($r['number'] === 120 && $r['label'] === "JumpServer Total Events ($up 20%)", 'the change sits next to the number it is about');
+    check($r['number'] === 120 && $r['label'] === "JumpServer All Events ($up 20%)", 'the change sits next to the number it is about');
     check(isset($r['alt']) && str_contains($r['alt'], '120') && str_contains($r['alt'], '100'), 'and the tooltip says both figures');
     check(count($DB->requests) === 3, 'three counts: shown, same period, period before');
 
     $DB->requests = []; $DB->counts = [120, 119, 100];
     $r = $D::provideTotalEvents([]);
-    check($r['number'] === 120 && $r['label'] === 'JumpServer Total Events' && !isset($r['alt']),
+    check($r['number'] === 120 && $r['label'] === 'JumpServer All Events' && !isset($r['alt']),
           'when this query does not reproduce the shown number, no change is shown');
     check(count($DB->requests) === 2, 'and the period before is not even read');
 
     $DB->requests = []; $DB->counts = [0, 0, 0];
     $r = $D::provideTotalEvents([]);
-    check($r['label'] === 'JumpServer Total Events', 'zero in both periods: no change');
+    check($r['label'] === 'JumpServer All Events', 'zero in both periods: no change');
 
     $DB->requests = []; $DB->counts = [30, 30, 25];
     $r = $D::provideLoginFailures([]);
@@ -135,12 +135,12 @@ namespace {
 
     $DB->requests = []; $DB->counts = [10, 10, 5];
     $r = $D::provideTotalEvents(['apply_filters' => ['dates' => ['not a date', '2026-09-30']]]);
-    check($r['label'] === 'JumpServer Total Events' && count($DB->requests) === 1,
+    check($r['label'] === 'JumpServer All Events' && count($DB->requests) === 1,
           'a filter that is not made of dates shows the number and no change');
 
     $DB->requests = []; $DB->counts = [10, 10, 5];
     $r = $D::provideTotalEvents(['apply_filters' => ['dates' => ['2026-09-30', '2026-09-01']]]);
-    check($r['label'] === 'JumpServer Total Events', 'and so does a filter that ends before it starts');
+    check($r['label'] === 'JumpServer All Events', 'and so does a filter that ends before it starts');
 
     // every count is the viewer's
     $DB->requests = []; $DB->counts = [1, 1, 1];

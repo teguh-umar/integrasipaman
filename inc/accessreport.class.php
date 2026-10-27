@@ -49,6 +49,7 @@ class PluginIntegrasipamanAccessReport
     public const MEMBERS_TABLE = PluginIntegrasipamanEntitlement::MEMBERS_TABLE;
 
     private const USERMAP_TABLE   = 'glpi_plugin_jumpserver_usermap';
+    private const HOSTS_TABLE     = PluginIntegrasipamanEntitlement::HOSTS_TABLE;
     private const COMPUTERS_TABLE = 'glpi_computers';
 
     /**
@@ -316,7 +317,8 @@ class PluginIntegrasipamanAccessReport
         $seen = [];
 
         foreach ($DB->request([
-            'SELECT'     => ['m.computers_id', 'c.name AS computer_name',
+            'SELECT'     => ['m.computers_id', 'c.name AS computer_name', 'c.id AS computer_row_id',
+                             'h.name AS jms_asset_name', 'm.jms_asset_id',
                              'r.jms_id AS rule_jms_id', 'r.name AS rule_name',
                              'r.' . PluginIntegrasipamanConnection::FK . ' AS connection_id',
                              'r.users_json', 'r.user_groups_json', 'r.accounts', 'r.actions',
@@ -330,10 +332,23 @@ class PluginIntegrasipamanAccessReport
                     . ' = ' . $DB->quoteName('m.' . PluginIntegrasipamanConnection::FK)
                 )]],
             ]]],
-            'LEFT JOIN'  => [self::COMPUTERS_TABLE . ' AS c' => ['ON' => [
-                'c' => 'id',
-                'm' => 'computers_id',
-            ]]],
+            'LEFT JOIN'  => [
+                self::COMPUTERS_TABLE . ' AS c' => ['ON' => [
+                    'c' => 'id',
+                    'm' => 'computers_id',
+                ]],
+                // What PAMAN calls the asset. Joined on the UUID, which is
+                // the only key the orphan rows still carry - and the pull
+                // never visits them again, so nothing else could fill it.
+                self::HOSTS_TABLE . ' AS h' => ['ON' => [
+                    'h' => 'jms_id',
+                    'm' => 'jms_asset_id',
+                    ['AND' => [new QueryExpression(
+                        $DB->quoteName('h.' . PluginIntegrasipamanConnection::FK)
+                        . ' = ' . $DB->quoteName('m.' . PluginIntegrasipamanConnection::FK)
+                    )]],
+                ]],
+            ],
             'WHERE'      => PluginIntegrasipamanConnection::viewer('m'),
             'ORDER'      => 'c.name ASC, r.is_valid DESC, r.name ASC',
         ]) as $row) {
@@ -348,16 +363,22 @@ class PluginIntegrasipamanAccessReport
             $valid = ((int) ($row['is_valid'] ?? 0) === 1)
                 && ((int) ($row['is_expired'] ?? 0) === 0);
 
+            // Whether GLPI still holds the asset is decided by the LEFT JOIN, never
+            // by the name: an existing computer with a blank name and a computer that
+            // has been deleted both read as '' once the name is cast to string.
             $base = [
-                'computers_id'  => $computers_id,
-                'computer_name' => (string) ($row['computer_name'] ?? ''),
-                'connection_id' => $connection,
-                'via'           => $rule_name,
-                'rule_jms_id'   => $rule_id,
-                'accounts'      => (string) ($row['accounts'] ?? ''),
-                'actions'       => (string) ($row['actions'] ?? ''),
-                'valid'         => $valid,
-                'date_expired'  => $row['date_expired'] ?? null,
+                'computers_id'   => $computers_id,
+                'computer_name'  => (string) ($row['computer_name'] ?? ''),
+                'computer_known' => ($row['computer_row_id'] ?? null) !== null,
+                'jms_asset_name' => (string) ($row['jms_asset_name'] ?? ''),
+                'jms_asset_id'   => (string) ($row['jms_asset_id'] ?? ''),
+                'connection_id'  => $connection,
+                'via'            => $rule_name,
+                'rule_jms_id'    => $rule_id,
+                'accounts'       => (string) ($row['accounts'] ?? ''),
+                'actions'        => (string) ($row['actions'] ?? ''),
+                'valid'          => $valid,
+                'date_expired'   => $row['date_expired'] ?? null,
             ];
 
             foreach (self::decodeMembers($row['users_json'] ?? null) as $user) {
@@ -418,6 +439,71 @@ class PluginIntegrasipamanAccessReport
         }
 
         return $rows;
+    }
+
+    /**
+     * Does GLPI still hold the asset this grant points at?
+     *
+     * A row that predates the flag is treated as known. Labelling a live asset
+     * as deleted is the worse of the two errors: it would discredit a row an
+     * auditor has to trust.
+     *
+     * @param array<string,mixed> $row
+     */
+    public static function assetIsKnown(array $row): bool
+    {
+        return !array_key_exists('computer_known', $row) || !empty($row['computer_known']);
+    }
+
+    /**
+     * What goes in the asset cell: GLPI's name for the asset, else the name the
+     * bastion has for it, else the bare id.
+     *
+     * The bastion's name is the only name left for an asset GLPI has deleted,
+     * and it is why the host list is stored at all. GLPI's own name still wins
+     * where there is one: that is the name the rest of GLPI shows.
+     *
+     * @param array<string,mixed> $row
+     */
+    public static function assetName(array $row): string
+    {
+        $name = trim((string) ($row['computer_name'] ?? ''));
+        if ($name !== '') {
+            return $name;
+        }
+
+        $jms = trim((string) ($row['jms_asset_name'] ?? ''));
+        if ($jms !== '') {
+            return $jms;
+        }
+
+        return '#' . (int) ($row['computers_id'] ?? 0);
+    }
+
+    /**
+     * The note that follows the asset cell: the id for an asset GLPI still has,
+     * and for one it no longer has, why the id is all that is left.
+     *
+     * The row is never dropped. A permission rule that still names a deleted
+     * computer is live access to an asset nobody is maintaining - which is the
+     * finding, not a blemish on the report.
+     *
+     * @param array<string,mixed> $row
+     */
+    public static function assetNote(array $row): string
+    {
+        $id = '#' . (int) ($row['computers_id'] ?? 0);
+
+        // One rule for every case: the note carries the id unless the cell is
+        // already the id, so a row never prints the same number twice - and
+        // the id is never dropped just because some name was available.
+        $parts = self::assetName($row) === $id ? [] : [$id];
+
+        if (!self::assetIsKnown($row)) {
+            $parts[] = __('asset no longer in GLPI', 'integrasipaman');
+        }
+
+        return implode(', ', $parts);
     }
 
     /**
@@ -487,8 +573,15 @@ class PluginIntegrasipamanAccessReport
         $direct = 0;
         $group  = 0;
 
+        $gone        = [];
+        $gone_paths  = 0;
+
         foreach ($grants as $row) {
             $assets[(int) ($row['computers_id'] ?? 0)] = true;
+            if (!self::assetIsKnown($row)) {
+                $gone[(int) ($row['computers_id'] ?? 0)] = true;
+                $gone_paths++;
+            }
             if (($row['type'] ?? '') === 'group') {
                 $group++;
                 if (($row['group_jms_id'] ?? '') !== '') {
@@ -500,11 +593,16 @@ class PluginIntegrasipamanAccessReport
         }
 
         return [
-            'grants' => count($grants),
-            'direct' => $direct,
-            'group'  => $group,
-            'assets' => count($assets),
-            'groups' => count($groups),
+            'grants'      => count($grants),
+            'direct'      => $direct,
+            'group'       => $group,
+            'assets'      => count($assets),
+            'groups'      => count($groups),
+            // Counted, not hidden: a rule still granting access to an asset
+            // GLPI has lost is a finding, and a total that quietly excluded it
+            // would be the wrong total.
+            'gone_paths'  => $gone_paths,
+            'gone_assets' => count($gone),
         ];
     }
 
@@ -635,6 +733,9 @@ class PluginIntegrasipamanAccessReport
                 $by[$computers_id] = [
                     'computers_id'   => $computers_id,
                     'computer_name'  => (string) ($path['computer_name'] ?? ''),
+                    'computer_known' => self::assetIsKnown($path),
+                    'jms_asset_name' => (string) ($path['jms_asset_name'] ?? ''),
+                    'jms_asset_id'   => (string) ($path['jms_asset_id'] ?? ''),
                     'paths'          => [],
                     'groups'         => [],
                     'accounts'       => [],

@@ -796,5 +796,69 @@ $r = run_asset_mismatch([
 check(($r[9] ?? null) === 1,
       'a within-window row is still computed (got ' . json_encode($r) . ')');
 
+// --- a matched user is RESOLVED, even when they are not an admin ---------
+// Reported from the VM, 2026-10-27: rows showed the GLPI user in one column
+// and "unresolved" in the column headed "Resolved by". The data was right and
+// the word was wrong - resolve_method only ever recorded how the ADMIN verdict
+// was reached, so every ordinary person read as a failed lookup. Finding the
+// GLPI user is a resolution; being an admin is a separate verdict, carried by
+// is_admin.
+Config::$vals = ['correlation_match_mode' => 'ip_only', 'correlation_production_ipnetworks' => '',
+    'correlation_admin_groups' => '4', 'jumpserver_production_ip_prefixes' => '',
+    'jumpserver_admin_users' => '', 'correlation_maps_generation' => '0'];
+$db = new FakeDB();
+$db->tables = ['assetmap' => [], 'distinct_asset' => [], 'distinct_user' => [],
+    'usermap' => [['id' => 1, 'jms_user' => 'A(alice)', 'parsed_login' => 'alice', 'is_manual' => 0, 'is_admin' => 0]],
+    'users' => [['id' => 15]], 'groups_users' => [['c' => 0]]];
+$GLOBALS['DB'] = $db;
+$C::resolveAll();
+$uu = $db->updates[0][1] ?? [];
+check(($uu['users_id'] ?? null) === 15, 'the GLPI user is found by login (got ' . json_encode($uu) . ')');
+check(($uu['is_admin'] ?? null) === 0, 'and they are correctly NOT an admin');
+check(($uu['resolve_method'] ?? null) === 'login',
+      'so the method is "login", not "unresolved" (got ' . json_encode($uu['resolve_method'] ?? null) . ')');
+
+// No GLPI user and no admin rule is the only thing left that is unresolved.
+$db = new FakeDB();
+$db->tables = ['assetmap' => [], 'distinct_asset' => [], 'distinct_user' => [],
+    'usermap' => [['id' => 1, 'jms_user' => 'Z(zoe)', 'parsed_login' => 'zoe', 'is_manual' => 0, 'is_admin' => 0]],
+    'users' => [], 'groups_users' => [['c' => 0]]];
+$GLOBALS['DB'] = $db;
+$C::resolveAll();
+$uu = $db->updates[0][1] ?? [];
+check(($uu['users_id'] ?? null) === 0 && ($uu['resolve_method'] ?? null) === 'unresolved',
+      'no GLPI user and no admin rule is still unresolved (got ' . json_encode($uu) . ')');
+
+// The admin methods must keep winning over the plain match: they say MORE
+// about the row, and is_admin is the verdict the risk evaluation reads.
+$db = new FakeDB();
+$db->tables = ['assetmap' => [], 'distinct_asset' => [], 'distinct_user' => [],
+    'usermap' => [['id' => 1, 'jms_user' => 'A(alice)', 'parsed_login' => 'alice', 'is_manual' => 0, 'is_admin' => 0]],
+    'users' => [['id' => 15]], 'groups_users' => [['c' => 1]]];
+$GLOBALS['DB'] = $db;
+$C::resolveAll();
+$uu = $db->updates[0][1] ?? [];
+check(($uu['resolve_method'] ?? null) === 'group',
+      'a matched user who IS in an admin group still reads "group", not "login"');
+
+// A row with no login at all cannot be matched, and must not claim it was.
+$db = new FakeDB();
+$db->tables = ['assetmap' => [], 'distinct_asset' => [], 'distinct_user' => [],
+    'usermap' => [['id' => 1, 'jms_user' => 'Manual Input', 'parsed_login' => '', 'is_manual' => 0, 'is_admin' => 0]],
+    'users' => [['id' => 15]], 'groups_users' => [['c' => 0]]];
+$GLOBALS['DB'] = $db;
+$C::resolveAll();
+$uu = $db->updates[0][1] ?? [];
+check(($uu['users_id'] ?? null) === 0 && ($uu['resolve_method'] ?? null) === 'unresolved',
+      'an entry with no parsed login is unresolved, never matched to a stray user');
+
+// The correlation page must count the new method as resolved. It buckets by
+// an explicit list, so a value missing from that list is counted as NOTHING -
+// it would vanish from every bucket while still inflating the total.
+$page = (string) file_get_contents(__DIR__ . '/../front/correlation.php');
+check(strpos($page, "'computer_ip', 'group', 'login'") !== false,
+      'front/correlation.php counts "login" among the resolved methods');
+
+
 echo $fails === 0 ? "\nALL PASS\n" : "\n$fails FAILED\n";
 exit($fails === 0 ? 0 : 1);

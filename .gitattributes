@@ -22,3 +22,7 @@
 lib/pgnsuite/ConfigTab.php -text
 lib/pgnsuite/AssetTab.php -text
 lib/pgnsuite/Menu.php -text
+# Shared since ConfigTab r5 (2026-10-27): the settings page moved out of
+# Setup > General into its own Setup entry, and every plugin ships the same
+# controller for it. Byte-identical for the same reason as the classes.
+front/pgnsuite.settings.php -text

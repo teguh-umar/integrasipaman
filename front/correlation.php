@@ -69,7 +69,9 @@ $counts = static function (string $table): array {
         $m = (string) $r['resolve_method'];
         if (isset($out[$m])) {
             $out[$m]++;
-        } elseif (in_array($m, ['ipnet', 'addr_range', 'computer_ip', 'group'], true)) {
+            // 'login': the JumpServer account was matched to a GLPI user and
+            // that user is not an admin. Resolved, just not privileged.
+        } elseif (in_array($m, ['ipnet', 'addr_range', 'computer_ip', 'group', 'login'], true)) {
             $out['resolved']++;
         }
     }

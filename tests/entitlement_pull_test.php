@@ -512,5 +512,69 @@ check($db->seen === [],
     . 'touched, not after a pointless walk of every row (saw '
     . count($db->seen) . ')');
 
+// --- hostIndex() keeps the names the same response already carried --------
+// rc2's VM pass asked for the asset's PAMAN name on rows GLPI has lost.
+// hostLookup() had the names in hand and discarded them. hostIndex() returns
+// both directions from ONE call: the host list is 645 rows on one paginated
+// request, and a second call for data that cannot change within a run would
+// be waste for nothing.
+$GLOBALS['API_RESPONSES'] = [
+    'assets/hosts/' => [
+        ['id' => 'A1', 'name' => 'db-prod-01', 'address' => '10.0.0.5'],
+        ['id' => '',   'name' => 'ghost-host', 'address' => '10.0.0.9'],
+        ['id' => 'A2', 'name' => ' Web-Prod-02 ', 'address' => ''],
+    ],
+];
+PluginIntegrasipamanJmsApi::$asked = [];
+$index = $E::hostIndex(['https://x', 'k', 's', 'o']);
+
+check(count(PluginIntegrasipamanJmsApi::$asked) === 1,
+      'hostIndex() issues exactly ONE host call for both directions');
+check(($index['hosts']['A1']['name'] ?? null) === 'db-prod-01'
+      && ($index['hosts']['A1']['address'] ?? null) === '10.0.0.5',
+      'UUID -> name/address is returned alongside the lookup');
+check(($index['hosts']['A2']['name'] ?? null) === 'Web-Prod-02',
+      'the name is trimmed but NOT lowercased: it is shown to a person, not matched');
+check(!isset($index['hosts']['']), 'a host with no id is skipped here too');
+check(count($index['hosts']) === 2, 'two hosts indexed by UUID');
+check($index['lookup'] === $E::hostLookup(['https://x', 'k', 's', 'o']),
+      'hostLookup() still answers exactly what it used to');
+
+// --- storeHosts() is all-or-nothing, like the group pull ------------------
+$db = new FakeDB(); $GLOBALS['DB'] = $db;
+check($E::storeHosts([]) === -1,
+      'an empty host list writes NOTHING and says so: a failed call must not blank every name');
+check($db->seen === [], 'and it issues no write at all');
+
+$db = new FakeDB(); $GLOBALS['DB'] = $db;
+$written = $E::storeHosts($index['hosts']);
+check($written === 2, 'both hosts are written (got ' . $written . ')');
+
+$upserts = array_values(array_filter($db->seen, static fn ($q): bool => isset($q['UPSERT'])));
+check(count($upserts) === 2 && $upserts[0]['UPSERT'] === 'glpi_plugin_jumpserver_hosts',
+      'written to the host-name table');
+check(($upserts[0]['w']['jms_id'] ?? null) === 'A1'
+      && isset($upserts[0]['w']['plugin_jumpserver_connections_id']),
+      'keyed by (connection, UUID): two bastions may issue the same UUID');
+check(($upserts[0]['p']['name'] ?? null) === 'db-prod-01'
+      && ($upserts[0]['p']['address'] ?? null) === '10.0.0.5',
+      'the name and address are what gets stored');
+check(array_key_exists('date_pulled', $upserts[0]['p']),
+      'with the pull date, so a stale name can be recognised as stale');
+check(array_key_exists('entities_id', $upserts[0]['p']),
+      'and stamped with the entity, like every other pulled row');
+
+// The pull must collect the names before it walks the Computers, and it must
+// not stop the run when they cannot be collected.
+$src = (string) file_get_contents(__DIR__ . '/../inc/entitlement.class.php');
+check(strpos($src, 'storeHosts($index[') !== false
+      && strpos($src, 'hostIndex($credentials)') < strpos($src, 'storeHosts($index['),
+      'pullFor() stores the names from the index it just fetched');
+check(strpos($src, 'storeHosts($index[') < strpos($src, 'candidateAssets($lookup)'),
+      'and does so before matching Computers, so one run leaves the report complete');
+check(strpos($src, 'left in place') !== false,
+      'a failed host pull keeps the previous names rather than emptying them');
+
+
 echo $fails === 0 ? "\nALL PASS\n" : "\n$fails FAILURE(S)\n";
 exit($fails === 0 ? 0 : 1);

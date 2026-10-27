@@ -750,6 +750,47 @@ function plugin_integrasipaman_install(): bool
         }
     }
 
+    // --- v4.10.0: what PAMAN calls each host ------------------------------
+    // The entitlement pull already fetches every host in the organization to
+    // match them to Computers, and threw the names away. 166 of 2650
+    // assetperms rows name a `computers_id` that is no longer in
+    // glpi_computers, and those rows are never rewritten: the pull iterates
+    // EXISTING Computers, so a deleted one is never visited again. Their
+    // JumpServer UUID is all they carry, and a UUID tells an auditor nothing.
+    //
+    // A table of its own rather than a column on assetperms, for the same
+    // reason usergroups is separate: assetperms rows are written per Computer
+    // by a path that is live and verified, and the host list is pulled once
+    // per run for the whole organization. Joining on the UUID also reaches the
+    // orphan rows that no pull will ever touch again - a column would stay
+    // empty on exactly the rows this exists for.
+    $hosts_table = 'glpi_plugin_jumpserver_hosts';
+
+    if (!$DB->tableExists($hosts_table)) {
+        $default_charset   = DBConnection::getDefaultCharset();
+        $default_collation = DBConnection::getDefaultCollation();
+        $default_key_sign  = DBConnection::getDefaultPrimaryKeySignOption();
+
+        $query = "CREATE TABLE `$hosts_table` (
+            `id` INT {$default_key_sign} NOT NULL AUTO_INCREMENT,
+            `jms_id` VARCHAR(64) NOT NULL DEFAULT '',
+            `name` VARCHAR(191) NOT NULL DEFAULT '',
+            `address` VARCHAR(191) NOT NULL DEFAULT '',
+            `date_pulled` TIMESTAMP NULL DEFAULT NULL,
+            `plugin_jumpserver_connections_id` INT {$default_key_sign} NOT NULL DEFAULT 0,
+            `entities_id` INT {$default_key_sign} NOT NULL DEFAULT 0,
+            PRIMARY KEY (`id`),
+            UNIQUE KEY `connection_host` (`plugin_jumpserver_connections_id`, `jms_id`),
+            KEY `jms_id` (`jms_id`),
+            KEY `entities_id` (`entities_id`)
+        ) ENGINE=InnoDB DEFAULT CHARSET={$default_charset} COLLATE={$default_collation}";
+
+        if (!$DB->doQuery($query)) {
+            trigger_error(sprintf('Unable to create table %s: %s', $hosts_table, $DB->error()), E_USER_WARNING);
+            return false;
+        }
+    }
+
     // --- schema-convention migration (v3.2.0) -----------------------------
     // v3.0.1 created three columns that GLPI 11 counts as violations on the
     // Setup page: two `*_id` columns without UNSIGNED, and one DATETIME.

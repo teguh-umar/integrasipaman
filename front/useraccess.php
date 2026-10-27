@@ -45,7 +45,9 @@ if (($_GET['format'] ?? '') === 'csv') {
 
         $rows[] = [
             (int) $grant['computers_id'],
-            (string) $grant['computer_name'],
+            $R::assetIsKnown($grant)
+                ? (string) $grant['computer_name']
+                : $R::assetName($grant) . ' (' . $R::assetNote($grant) . ')',
             $grant['type'] === 'group'
                 ? __('Group', 'integrasipaman')
                 : __('Direct', 'integrasipaman'),
@@ -157,6 +159,18 @@ echo '<p class="text-muted">' . htmlescape(sprintf(
     $report['summary']['groups']
 )) . '</p>';
 
+// An asset GLPI no longer holds is still reachable through the rule that names
+// it, so the row stays and is counted here. Saying the number out loud is the
+// point: 166 of 2650 cached map rows on this instance are in that state, and a
+// reader who does not know that reads every "#1635" as a glitch.
+if ($report['summary']['gone_paths'] > 0) {
+    echo '<p class="text-muted">' . htmlescape(sprintf(
+        PluginIntegrasipamanServerLabel::in(__('%1$d of these path(s) grant access to %2$d asset(s) that GLPI no longer holds. The rule was never revoked, so the access is still real - only the asset record is gone. Those rows are named from the host list of {server}, with the GLPI id kept beside the name so the rule can be chased; a row shows the bare id when {server} does not list the asset either.', 'integrasipaman')),
+        $report['summary']['gone_paths'],
+        $report['summary']['gone_assets']
+    )) . '</p>';
+}
+
 echo '<p class="form-hint">' . htmlescape(__(
     'A grant path is one way in: a rule that names a person, or a rule that names a group. The same group reaching one asset through two rules is two paths. The members of a group are not expanded into separate rows here - that would count people rather than ways in.',
     'integrasipaman'
@@ -236,14 +250,11 @@ if ($report['grants'] === []) {
 }
 
 foreach ($grants_page as $grant) {
-    $computer = (string) $grant['computer_name'];
-    if ($computer === '') {
-        $computer = '#' . (int) $grant['computers_id'];
-    }
+    $note = $R::assetNote($grant);
 
-    echo '<tr><td>' . htmlescape($computer);
-    if ((string) $grant['computer_name'] !== '') {
-        echo ' <span class="text-muted">(#' . (int) $grant['computers_id'] . ')</span>';
+    echo '<tr><td>' . htmlescape($R::assetName($grant));
+    if ($note !== '') {
+        echo ' <span class="text-muted">(' . htmlescape($note) . ')</span>';
     }
     echo '</td>';
 

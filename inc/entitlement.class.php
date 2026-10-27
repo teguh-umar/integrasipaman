@@ -32,6 +32,7 @@ class PluginIntegrasipamanEntitlement
     public const MAP_TABLE   = 'glpi_plugin_jumpserver_assetperms';
     public const GROUPS_TABLE  = 'glpi_plugin_jumpserver_usergroups';
     public const MEMBERS_TABLE = 'glpi_plugin_jumpserver_groupmembers';
+    public const HOSTS_TABLE   = 'glpi_plugin_jumpserver_hosts';
 
     /**
      * jms_id of the row that records "a complete membership pull ran".
@@ -528,10 +529,30 @@ class PluginIntegrasipamanEntitlement
      */
     public static function hostLookup(array $credentials): array
     {
-        $hosts = PluginIntegrasipamanJmsApi::signedGet('/api/v1/assets/hosts/?limit=500', ...$credentials);
+        return self::hostIndex($credentials)['lookup'];
+    }
+
+    /**
+     * One host pull, read two ways.
+     *
+     * `lookup` is the name/address -> UUID map the matching has always used.
+     * `hosts` is the other direction, UUID -> {name, address}, which the same
+     * response already carried and which hostLookup() used to discard. It is
+     * what lets the access report say what PAMAN calls an asset GLPI has lost.
+     *
+     * Deliberately one API call for both: the host list is 645 rows on one
+     * paginated request and cannot change within a run.
+     *
+     * @param array{0:string,1:string,2:string,3:string} $credentials
+     * @return array{lookup: array<string,string>, hosts: array<string,array{name:string,address:string}>}
+     */
+    public static function hostIndex(array $credentials): array
+    {
+        $response = PluginIntegrasipamanJmsApi::signedGet('/api/v1/assets/hosts/?limit=500', ...$credentials);
 
         $lookup = [];
-        foreach ((array) $hosts as $h) {
+        $hosts  = [];
+        foreach ((array) $response as $h) {
             if (!is_array($h)) {
                 continue;
             }
@@ -539,15 +560,61 @@ class PluginIntegrasipamanEntitlement
             if ($id === '') {
                 continue;
             }
-            foreach ([$h['name'] ?? '', $h['address'] ?? ''] as $key) {
-                $key = strtolower(trim((string) $key));
+            $name    = trim((string) ($h['name'] ?? ''));
+            $address = trim((string) ($h['address'] ?? ''));
+            $hosts[$id] = ['name' => $name, 'address' => $address];
+
+            foreach ([$name, $address] as $key) {
+                $key = strtolower($key);
                 if ($key !== '') {
                     $lookup[$key] = $id;
                 }
             }
         }
 
-        return $lookup;
+        return ['lookup' => $lookup, 'hosts' => $hosts];
+    }
+
+    /**
+     * Store UUID -> name/address for this connection.
+     *
+     * All-or-nothing, like the group pull: an empty list means the call
+     * failed or returned nothing usable, and the previous snapshot is kept.
+     * A name that is merely old is still the right name far more often than
+     * no name at all, and the report shows the id beside it either way.
+     *
+     * @param array<string,array{name:string,address:string}> $hosts
+     * @return int rows written, or -1 when nothing was usable
+     */
+    public static function storeHosts(array $hosts): int
+    {
+        global $DB;
+
+        if ($hosts === []) {
+            return -1;
+        }
+
+        $now   = $_SESSION['glpi_currenttime'] ?? date('Y-m-d H:i:s');
+        $stamp = PluginIntegrasipamanConnection::stamp();
+
+        $written = 0;
+        foreach ($hosts as $id => $host) {
+            $id = (string) $id;
+            if ($id === '') {
+                continue;
+            }
+            $DB->updateOrInsert(self::HOSTS_TABLE, [
+                'name'        => (string) ($host['name'] ?? ''),
+                'address'     => (string) ($host['address'] ?? ''),
+                'date_pulled' => $now,
+            ] + $stamp, [
+                'plugin_jumpserver_connections_id' => $stamp[PluginIntegrasipamanConnection::FK] ?? 0,
+                'jms_id'                           => $id,
+            ]);
+            $written++;
+        }
+
+        return $written;
     }
 
     /**
@@ -956,8 +1023,17 @@ class PluginIntegrasipamanEntitlement
         // One host pull per run, shared by every Computer below. Resolving
         // per Computer would add BATCH_LIMIT calls for data that cannot
         // change within a single run.
-        $lookup = self::hostLookup($credentials);
+        $index  = self::hostIndex($credentials);
+        $lookup = $index['lookup'];
         $task->log(sprintf('%d host name/address key(s) resolved.', count($lookup)));
+
+        // The names from the same response. They are what the access report
+        // shows for an asset GLPI no longer holds - the one case where the
+        // plugin's own tables are the only place the name still exists.
+        $named = self::storeHosts($index['hosts']);
+        $task->log($named < 0
+            ? PluginIntegrasipamanServerLabel::in('No host names collected from {server}; the previous names were left in place.')
+            : sprintf('%d host name(s) stored.', $named));
 
         $live = self::markLiveAssets($lookup);
         $task->log($live < 0

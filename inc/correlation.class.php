@@ -917,7 +917,13 @@ class PluginIntegrasipamanCorrelation extends CommonGLPI
         }
 
         $is_admin = 0;
-        $method   = 'unresolved';
+
+        // 'unresolved' used to mean "no admin rule fired", which made every
+        // ordinary non-admin read as unresolved on a column labelled "Resolved
+        // by" - even with their GLPI user sitting in the next column. Finding
+        // the GLPI user IS a resolution; being an admin is a separate verdict,
+        // and is_admin is the column that carries it.
+        $method = $users_id > 0 ? 'login' : 'unresolved';
 
         if ($users_id > 0 && $group_ids !== []) {
             foreach ($DB->request([

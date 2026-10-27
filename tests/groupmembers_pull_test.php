@@ -277,7 +277,17 @@ check(count($group_rows) === 1 && ($group_rows[0]['r']['jms_id'] ?? null) === ''
 $src = (string) file_get_contents(__DIR__ . '/../inc/entitlement.class.php');
 check(str_contains($src, 'pullGroupMembers($credentials'),
       'the entitlement cron calls the membership pull - it is not a second cron task');
-check(strpos($src, 'pullGroupMembers($credentials') < strpos($src, 'hostLookup($credentials)'),
+// v4.10.0-rc3 moved the landmark twice over: pullFor() now calls hostIndex(),
+// because the same host response also carries the names the access report
+// needs, and hostLookup() survives as a one-line wrapper that ALSO contains
+// the string. A needle counted from the start of the file therefore finds the
+// wrapper, not the call site. The order is a property of pullFor(), so it is
+// read inside pullFor() - the earlier version of this check was pinned to a
+// file offset and reported false when the landmark moved.
+$pull_for = substr($src, (int) strpos($src, 'private static function pullFor'));
+check(str_contains($pull_for, 'hostIndex($credentials)'),
+      'the host pull is still a single call in pullFor()');
+check(strpos($pull_for, 'pullGroupMembers($credentials') < strpos($pull_for, 'hostIndex($credentials)'),
       'membership is pulled before per-Computer refreshes, once per connection');
 
 echo $fails === 0 ? "\nALL PASS\n" : "\n$fails FAILURE(S)\n";

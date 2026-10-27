@@ -63,11 +63,16 @@ function rule_row(
     array $groups,
     int $computer = 46,
     string $computer_name = 'example-app-46',
-    bool $valid = true
+    bool $valid = true,
+    bool $in_glpi = true
 ): array {
     return [
         'computers_id'     => $computer,
-        'computer_name'    => $computer_name,
+        'computer_name'    => $in_glpi ? $computer_name : null,
+        // The LEFT JOIN on glpi_computers: NULL is the only honest signal that
+        // the asset is gone, because a live computer with a blank name also
+        // comes back with an empty name.
+        'computer_row_id'  => $in_glpi ? $computer : null,
         'rule_jms_id'      => $rule,
         'rule_name'        => 'Rule ' . $rule,
         // forComputer() reads the unaliased names; build() reads the aliases.
@@ -395,6 +400,178 @@ check(preg_match('/max\(1, min\(\$pages, \(int\) \(\$_GET\[\'page\'\] \?\? 1\)\)
       'the requested page is clamped between 1 and the last page');
 check(preg_match('/\$pages\s*=\s*max\(1, \(int\) ceil\(/', $page_src) === 1,
       'there is always at least one page, so an empty result still renders its table');
+
+// --- an asset GLPI no longer holds (v4.10.0) ------------------------------
+// 166 of 2650 cached map rows on the live instance point at a computers_id
+// that is not in glpi_computers any more. The rule was never revoked, so the
+// access is still real; dropping the row or blanking its cell would hide it.
+// It is labelled instead, WITH the id, so it can be chased.
+$orphan_rows = [
+    rule_row('R9', [['id' => 'U-ALICE', 'display' => 'Alice Example (alice)']], [], 1635, '', true, false),
+];
+[$db, $orphan_report] = build_with([], null, null, $orphan_rows);
+$orphan = $orphan_report['grants'];
+
+check(count($orphan) === 1, 'a grant whose asset is gone from GLPI is still a row');
+check(($orphan[0]['computer_known'] ?? null) === false,
+      'and it is marked as an asset GLPI no longer holds');
+check($R::assetName($orphan[0]) === '#1635',
+      'its asset cell falls back to the bare id');
+check($R::assetNote($orphan[0]) === 'asset no longer in GLPI',
+      'and the note says why the id is all there is');
+
+// The live case must not pick up the label.
+check(($c46[0]['computer_known'] ?? null) === true, 'a live asset stays known');
+check($R::assetName($c46[0]) === 'example-app-46' && $R::assetNote($c46[0]) === '#46',
+      'a live asset shows its name and its id, unchanged');
+
+// A live computer with a blank name is NOT an orphan: the id stands in for the
+// name and no label is added. Inferring "deleted" from an empty name would put
+// the label on a real asset.
+[$db, $unnamed_report] = build_with([], null, null, [
+    rule_row('R8', [['id' => 'U-BOB', 'display' => 'Bob Example (bob)']], [], 70, ''),
+]);
+$u = $unnamed_report['grants'][0];
+check($R::assetIsKnown($u) === true, 'an unnamed but existing computer is still known');
+check($R::assetName($u) === '#70' && $R::assetNote($u) === '',
+      'it shows the id once, with no deletion label');
+
+// The flag must default to known. A row built by a caller that does not set it
+// must not be labelled deleted - that error discredits rows an auditor has to
+// be able to trust.
+check($R::assetIsKnown(['computers_id' => 5, 'computer_name' => 'x']) === true,
+      'a row with no flag at all is treated as known, never as deleted');
+
+// forUser() collapses to one row per asset and must carry the flag across.
+$db = new FakeDB();
+$db->canned = [
+    $group_rows,
+    $member_rows,
+    [['jms_user' => 'Alice Example (alice)', 'parsed_login' => 'alice']],
+    $orphan_rows,
+];
+$GLOBALS['DB'] = $db;
+$alice_orphan = $R::forUser(45);
+check(count($alice_orphan['rows']) === 1
+      && ($alice_orphan['rows'][0]['computer_known'] ?? null) === false,
+      'the User tab pane sees the same flag after the per-asset collapse');
+
+// Both render sites must go through the shared helpers. A second copy of the
+// fallback is how the label ends up on one screen and not the other.
+$pane_src = (string) file_get_contents(__DIR__ . '/../inc/useraccess.class.php');
+check(strpos($pane_src, 'PluginIntegrasipamanAccessReport::assetNote($row)') !== false,
+      'the User tab pane renders the asset through assetNote()');
+check(strpos($pane_src, "'#' . (int)") === false,
+      'and keeps no copy of the id fallback of its own');
+
+// Twice on the page: once for the table, once for the CSV. The CSV is the file
+// an audit keeps, so a deleted asset must be named there too, not left blank.
+check(substr_count($page_src, '$R::assetName($grant)') === 2
+      && substr_count($page_src, '$R::assetNote($grant)') === 2,
+      'the report page renders the asset through the helpers in both the table and the CSV');
+check(strpos($page_src, "'#' . (int) ") === false,
+      'and the page keeps no copy of the id fallback either');
+
+// The summary counts them rather than excluding them, and the page says the
+// number out loud: an unexplained "#1635" in a table reads as a glitch.
+check($orphan_report['summary']['gone_paths'] === 1
+      && $orphan_report['summary']['gone_assets'] === 1,
+      'the summary counts the paths and the assets GLPI no longer holds');
+check($orphan_report['summary']['grants'] === 1,
+      'and the grand total still includes them');
+check($c46report['summary']['gone_paths'] === 0
+      && $c46report['summary']['gone_assets'] === 0,
+      'an all-live result reports zero of them');
+check(strpos($page_src, "gone_paths'] > 0") !== false,
+      'the page states the figure instead of leaving the bare ids unexplained');
+
+
+// --- the name PAMAN still has for an asset GLPI deleted (v4.10.0-rc3) -----
+// The VM pass of rc2 asked for this: "#1635" identifies the rule but tells an
+// auditor nothing. The entitlement pull already fetches every host in the org
+// to match them to Computers and threw the names away; they are stored now and
+// joined on the UUID, which is the only key an orphan row still carries.
+$named_orphan = rule_row('R9', [['id' => 'U-ALICE', 'display' => 'Alice Example (alice)']], [], 1635, '', true, false);
+$named_orphan['jms_asset_name'] = 'host-retired-07';
+$named_orphan['jms_asset_id']   = 'A-RETIRED';
+
+[$db, $named_report] = build_with([], null, null, [$named_orphan]);
+$no = $named_report['grants'][0];
+
+check($R::assetName($no) === 'host-retired-07',
+      'an asset GLPI deleted is named from the bastion host list');
+check($R::assetNote($no) === '#1635, asset no longer in GLPI',
+      'and the note keeps the GLPI id AND says the asset is gone');
+check(($no['computer_known'] ?? null) === false,
+      'naming it does not make it present again');
+
+// No name on either side is still the honest bare id, and the id is printed
+// once, not twice.
+check($R::assetName($orphan[0]) === '#1635'
+      && $R::assetNote($orphan[0]) === 'asset no longer in GLPI',
+      'with no bastion name the cell is the id and the note does not repeat it');
+
+// GLPI's own name wins wherever there is one: that is the name the rest of
+// GLPI shows, and disagreeing with it would be worse than being terse.
+$both = rule_row('R7', [['id' => 'U-BOB', 'display' => 'Bob Example (bob)']], [], 46, 'example-app-46');
+$both['jms_asset_name'] = 'something-else-entirely';
+[$db, $both_report] = build_with([], null, null, [$both]);
+$b = $both_report['grants'][0];
+check($R::assetName($b) === 'example-app-46' && $R::assetNote($b) === '#46',
+      'GLPI name wins over the bastion name for an asset GLPI still holds');
+
+// A live computer with no name but a bastion name: use the name, and keep the
+// id in the note rather than dropping it because some name turned up.
+$unnamed_live = rule_row('R6', [['id' => 'U-BOB', 'display' => 'Bob Example (bob)']], [], 70, '');
+$unnamed_live['jms_asset_name'] = 'host-70';
+[$db, $ul_report] = build_with([], null, null, [$unnamed_live]);
+$ul = $ul_report['grants'][0];
+check($R::assetIsKnown($ul) === true, 'it is still an asset GLPI holds');
+check($R::assetName($ul) === 'host-70' && $R::assetNote($ul) === '#70',
+      'the bastion name fills in for a blank GLPI name, with the id kept');
+
+// The join itself: the hosts table, on the UUID and the same connection.
+$grant_query = null;
+foreach ($db->seen as $q) {
+    if (($q['FROM'] ?? '') === $R::MAP_TABLE . ' AS m') {
+        $grant_query = $q;
+    }
+}
+check($grant_query !== null, 'the grant query was issued');
+if ($grant_query !== null) {
+    $joins = array_keys((array) ($grant_query['LEFT JOIN'] ?? []));
+    check(in_array('glpi_plugin_jumpserver_hosts AS h', $joins, true),
+          'the grant query LEFT JOINs the host-name table');
+    check(in_array('glpi_computers AS c', $joins, true),
+          'and still LEFT JOINs glpi_computers, so a deleted asset stays a row');
+    $on = (array) ($grant_query['LEFT JOIN']['glpi_plugin_jumpserver_hosts AS h']['ON'] ?? []);
+    check(($on['h'] ?? '') === 'jms_id' && ($on['m'] ?? '') === 'jms_asset_id',
+          'joined on the JumpServer UUID, the only key an orphan row carries');
+    $extra = '';
+    foreach ($on as $k => $v) {
+        if ($k === 'AND' || (is_int($k) && is_array($v))) {
+            $extra .= json_encode(array_map('strval', (array) ($v['AND'] ?? $v)));
+        }
+    }
+    check(strpos($extra, 'plugin_jumpserver_connections_id') !== false,
+          'and scoped to the same connection: two bastions may issue the same UUID');
+}
+
+// forUser() must carry the name across the per-asset collapse, or the User tab
+// would show the id while the report shows the name.
+$db = new FakeDB();
+$db->canned = [
+    $group_rows,
+    $member_rows,
+    [['jms_user' => 'Alice Example (alice)', 'parsed_login' => 'alice']],
+    [$named_orphan],
+];
+$GLOBALS['DB'] = $db;
+$alice_named = $R::forUser(45);
+check(count($alice_named['rows']) === 1
+      && $R::assetName($alice_named['rows'][0]) === 'host-retired-07',
+      'the User tab pane shows the same name after the collapse');
+
 
 echo $fails === 0 ? "\nALL PASS\n" : "\n$fails FAILURE(S)\n";
 exit($fails === 0 ? 0 : 1);

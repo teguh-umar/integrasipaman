@@ -218,7 +218,7 @@ check(($used['$tab'] ?? []) === ['pbi.php'] && isset($options_rw['insights'], $o
 // that plugin on production (lowest glpi_plugins.id).
 $expected = [
     'Menu.php'      => '34F40CBBFE14842972BB8806F6F0E9C8810D914FD57D2D1DD286033255CCCF88',   // r2
-    'ConfigTab.php' => 'F94A80C1C813A951919A20D2521DE35B431F9C836BBCCE89BAC70E544D0B80FA',   // r4
+    'ConfigTab.php' => '46FEAA6C01CB000722A496D0922892ED37FFB9CD0CF892F2851EC9423C2B59C8',   // r5
     'AssetTab.php'  => 'F8629CCA6D141B1E9271686C8D7F9D65E4FC84E39CF07E85B10FBC849A0B2466',   // r2
 ];
 // Found by walking up from the plugin root, because the plugin is checked out
@@ -243,6 +243,29 @@ foreach ($expected as $file => $sha) {
     check(str_contains($attr, "lib/pgnsuite/$file -text"),
           "lib/pgnsuite/$file is kept byte-exact by .gitattributes");
 }
+// The settings page's own controller is shared too, from r5 on. It carries no
+// logic - it includes core and calls ConfigTab::displayPage() - but it is what
+// ConfigTab::pagePath() looks for in every active plugin, so a plugin that
+// ships a different one hands the suite a different page.
+$page = __DIR__ . '/../front/pgnsuite.settings.php';
+$page_sha = is_file($page) ? strtoupper(hash_file('sha256', $page)) : 'missing';
+check($page_sha === '4BFF4A4B9866CF7373DE2B45EB096BE4D72999E854E2C2887806F5573F6B49FA',
+      "front/pgnsuite.settings.php is the canonical revision (got $page_sha)");
+check(str_contains($attr, 'front/pgnsuite.settings.php -text'),
+      'front/pgnsuite.settings.php is kept byte-exact by .gitattributes');
+
+// r5 reaches the page through Setup, not through a tab on Setup > General.
+// register() is still the only call a plugin makes, so this is what proves the
+// plugin is on r5 rather than silently still shipping r4.
+$configtab = (string) file_get_contents(__DIR__ . '/../lib/pgnsuite/ConfigTab.php');
+check(str_contains($configtab, 'public static function displayPage(): void')
+      && str_contains($configtab, 'public static function getMenuContent()'),
+      'the shipped ConfigTab is the Setup-entry revision (r5)');
+check(!str_contains($configtab, 'displayTabContentForItem'),
+      'and no longer renders itself as a tab on Setup > General');
+check(str_contains($configtab, "PAGE_FILE = 'front/pgnsuite.settings.php'"),
+      'r5 looks for exactly the controller this plugin ships');
+
 
 echo $fails === 0 ? "\nALL PASS\n" : "\n$fails FAILURE(S)\n";
 exit($fails === 0 ? 0 : 1);

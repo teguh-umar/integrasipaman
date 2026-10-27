@@ -450,14 +450,11 @@ class PluginIntegrasipamanUserAccess extends CommonGLPI
         }
 
         foreach ($access['rows'] as $row) {
-            $asset = (string) ($row['computer_name'] ?? '');
-            if ($asset === '') {
-                $asset = '#' . (int) ($row['computers_id'] ?? 0);
-            }
+            $note = PluginIntegrasipamanAccessReport::assetNote($row);
 
-            echo '<tr><td>' . htmlescape($asset);
-            if ((string) ($row['computer_name'] ?? '') !== '') {
-                echo ' <span class="text-muted">(#' . (int) $row['computers_id'] . ')</span>';
+            echo '<tr><td>' . htmlescape(PluginIntegrasipamanAccessReport::assetName($row));
+            if ($note !== '') {
+                echo ' <span class="text-muted">(' . htmlescape($note) . ')</span>';
             }
             echo '</td><td>';
 

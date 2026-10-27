@@ -3,62 +3,77 @@
 A [GLPI](https://glpi-project.org/) 11 plugin that connects GLPI to one or more
 [Fit2Cloud JumpServer](https://github.com/jumpserver/jumpserver) PAM instances through their
 REST API, pulls audit data on a schedule, and adds risk evaluation, correlation to GLPI assets
-and users, reporting, and human-gated asset provisioning on top of it.
+and users, access reporting and human-gated asset provisioning on top of it.
 
-Current version: **4.3.1**. User manual (Indonesian, written for 3.4.2): [docs/MANUAL.id.md](docs/MANUAL.id.md).
+Current version: **4.10.0**. A user manual in Indonesian, written for 3.4.2, ships as
+`docs/MANUAL.id.md` in the published repository; it predates everything in 4.x.
 
-> The seed values for the risk-evaluation config (admin user list, production IP prefixes) and
-> every name, host and address in the tests and the manual are illustrative placeholders. Set
-> your own from the plugin's configuration page.
+> The seed values for the risk-evaluation config — the admin user list and the production IP
+> prefixes — are configuration, not data this plugin stands behind. Set your own from the
+> plugin's configuration page before reading any verdict it produces.
 
 ## What it does
 
-- **Scheduled audit pull** - signs requests with a JumpServer Access Key (HTTP Signature /
+- **Scheduled audit pull** — signs requests with a JumpServer Access Key (HTTP Signature /
   HMAC-SHA256) and pulls, page by page: operate logs, login logs (failures only), session
-  sharings, terminal commands and terminal sessions. Stored in plugin tables, deduplicated per
-  connection, with a retention window and a first-run backfill.
-- **Several connections, separated per entity** (4.0.0) - a JumpServer connection is a record
-  owned by a GLPI entity (optionally with child entities and additional entities). Every stored
-  row carries its connection and entity; every list, count, card, export and tab shows only the
-  entities of the signed-in user's session. Automatic actions and the CLI are never restricted,
-  and one unreachable JumpServer does not stop the others.
-- **Command risk evaluation** - classifies every pulled command: high-risk keyword or JumpServer
+  sharings, session joins, terminal commands and terminal sessions. Stored in plugin tables,
+  deduplicated per connection, with a retention window and a first-run backfill.
+- **Several connections, separated per entity** — a JumpServer connection is a record owned by a
+  GLPI entity (optionally with child entities and additional entities). Every stored row carries
+  its connection and entity; every list, count, card, export and tab shows only the entities of
+  the signed-in user's session. Automatic actions and the CLI are never restricted, and one
+  unreachable JumpServer does not stop the others.
+- **Command risk evaluation** — classifies every pulled command: high-risk keyword or JumpServer
   risk level, category, whether the target is a production asset, whether the actor is a known
   admin, and a resulting priority and note. Rules are editable lists; changing a list
   re-evaluates the history.
-- **Asset and user correlation** - resolves each JumpServer asset to a production verdict
-  (core IP networks, "IP Addressing" plugin ranges, or a matched GLPI `Computer`) and each
-  JumpServer actor to an admin verdict (GLPI group membership), with per-row manual override.
-- **Asset provisioning (PAMAN)** - Computers eligible for the bastion wait in a queue; sending,
+- **Asset and user correlation** — resolves each JumpServer asset to a production verdict (core
+  IP networks, "IP Addressing" plugin ranges, or a matched GLPI `Computer`) and each JumpServer
+  actor to an admin verdict (GLPI group membership), with per-row manual override.
+- **User access reporting** (4.9.0) — which people can reach which assets, and how. A row is one
+  **grant path**: a rule naming a person, or a rule naming a group. The same group reaching one
+  asset through two rules is two rows, because that is what an audit has to see. Group membership
+  is pulled and stored, so access granted through a group is counted rather than missed — on the
+  reference instance that is 1450 of 4002 paths. A granting group that is not in the snapshot
+  reads *unknown*, never `0`; before the pull has ever run the page says membership has never
+  been collected. An asset GLPI no longer holds is labelled as such with its id (4.10.0) rather
+  than dropped: the rule was never revoked, so the access is still real, and it is named from the
+  bastion's own host list because that is the only place the name still exists.
+- **Asset provisioning (PAMAN)** — Computers eligible for the bastion wait in a queue; sending,
   re-sending and removing are manual actions behind their own right, and removal needs an
   approved ticket. Nothing is pushed on save.
-- **Entitlements** - a weekly pull of JumpServer asset permission rules, shown per Computer as
-  "Who has access", including machines nobody has used yet.
-- **Reports and pages** (menu entry in the shared PGN Suite sidebar sector):
-  - *PBI Insights* - an optional view on a separate read-only reporting database
-  - *Command Audit Report* - period-scoped, with KPI strip, summary tables, sortable high-risk
+- **Entitlements** — a weekly pull of JumpServer asset permission rules and user-group
+  membership, shown per Computer as "Who has access", including machines nobody has used yet.
+- **Reports and pages** (one menu entry in the shared PGN Suite sidebar sector):
+  - *PBI Insights* — an optional view on a separate read-only reporting database
+  - *Command Audit Report* — period-scoped, with KPI strip, summary tables, sortable high-risk
     detail and CSV / Excel / print export
-  - *Login failures* (4.3.0) - every refusal reason with the accounts behind it, accounts with
-    repeated failures, lockouts (an account that *is* locked, not the "will be locked" warning
-    on a wrong password), filters and CSV
-  - *Session sharing* (4.2.0) - who shared a session, with whom (or "anyone with the link and
-    code"), which session, until when, and whether it is still open
+  - *User access* (4.9.0) — the grant-path report above, filterable by asset, person or group,
+    paged, with CSV export of the whole filtered result rather than the page
+  - *Login failures* — every refusal reason with the accounts behind it, accounts with repeated
+    failures, lockouts (an account that *is* locked, not the "will be locked" warning on a wrong
+    password), filters and CSV
+  - *Session* (4.6.0, 4.7.0) — two tabs. *Log Session* is a real GLPI list built on the core
+    Search engine, so its columns, filters and sort behave like any other GLPI list.
+    *Session Sharing* shows who shared a session, with whom (or "anyone with the link and code"),
+    which session, until when, and whether it is still open
   - *Asset & user correlation*, *Asset provisioning*, *Setup*
-- **Dashboard cards** - Total Events, Events by Type (pie and bar), Login Failures, Login
-  Lockouts, Session Sharing and Recent Events. The big-number cards show the change against the
-  previous period and link to the page behind them.
-- **Secrets** - the Access Key Secret and the reporting-database password are stored encrypted
+- **Dashboard cards** — All Events, Events by Type (pie and bar), Login Failures, Login Lockouts,
+  Session Sharing and Recent Events. The big-number cards show the change against the previous
+  period and link to the page behind them. *All Events* counts every event in the window, so the
+  other tiles are subsets of it, not separate shares of it — the card says so.
+- **Secrets** — the Access Key Secret and the reporting-database password are stored encrypted
   (GLPI core `secured_fields` / `secured_configs`, context `plugin:integrasipaman`) and never
   printed back into a page.
 
 ## Rights
 
-Three rights, on **Administration -> Profiles -> JumpServer Integration**:
+Three rights, on **Administration → Profiles → JumpServer Integration**:
 
 | Right | Levels | Grants |
 |---|---|---|
-| `plugin_integrasipaman_config` | READ / UPDATE | the settings form, mapping lists; UPDATE: saving, *Re-evaluate now*, backfill, correlation, editing a mapping |
-| `plugin_integrasipaman_report` | READ | PBI Insights, Command Audit Report, Login failures, Session sharing, activity log and exports, dashboard cards, the *JumpServer access* tabs on Computer and User |
+| `plugin_integrasipaman_config` | READ / UPDATE | the settings form, mapping lists; UPDATE: saving, *Re-evaluate now*, the one-shot backfills, correlation, editing a mapping |
+| `plugin_integrasipaman_report` | READ | PBI Insights, Command Audit Report, User access, Login failures, Session, activity log and exports, dashboard cards, the *JumpServer access* tabs on Computer and User |
 | `plugin_integrasipaman_provisioning` | READ / Send / Remove | the provisioning queue; sending to, and removing from, the bastion |
 
 Profiles that hold core `config` UPDATE are restored to full rights on every
@@ -81,12 +96,18 @@ Profiles that hold core `config` UPDATE are restored to full rights on every
    php bin/console plugin:activate integrasipaman
    php bin/console cache:clear
    ```
-3. Log out and in again (the sidebar is built at login), open **Setup -> Plugins ->
-   JumpServer Integration Dashboard -> Configure** and add a connection.
-4. Make sure GLPI's automatic actions run, ideally from a system cron calling `front/cron.php`.
+3. Log out and in again — the sidebar is built at login.
+4. Open **Setup → ICT Tools** (the suite label is editable) and add a connection in the
+   plugin's section. From 4.10.0 the shared suite settings are their own entry in the Setup
+   sidebar; before that they were a tab on Setup → General.
+5. Make sure GLPI's automatic actions run, ideally from a system cron calling `front/cron.php`.
 
 Take a database backup before upgrading from 3.x: 4.0.0 alters unique keys on seven tables and
 re-decides the entity of stored records.
+
+Some releases ship a **one-shot backfill** under *Setup*, for history imported before the
+feature existed — session joins, and session type and login source. They are safe to re-run and
+report what they could not fill: JumpServer rotates its own session history away.
 
 ## Automatic actions
 
@@ -96,24 +117,27 @@ re-decides the entity of stored records.
 | `pull_terminal_activity` | daily | terminal commands and sessions, plus the retention prune |
 | `evaluate_commands` | every 15 min | correlation resolver and risk classification |
 | `provisioning_scan` | daily | refresh the provisioning queue (eligibility, drift, pending removal); never contacts the bastion |
-| `entitlement_pull` | weekly | JumpServer asset permission rules, matched to Computers |
+| `entitlement_pull` | weekly | JumpServer asset permission rules, user-group membership and the host-name list, matched to Computers |
 
 ## Layout
 
 ```
 setup.php  hook.php        plugin metadata, init hooks, install / uninstall
 inc/                       one class per concern (connection, cron, terminalpull, riskeval,
-                           correlation, provisioning, entitlement, report, loginfailures,
-                           sessionsharing, dashboard, menu, profile, ...)
-front/                     controllers: config.form, pbi (Insights + Report), loginfailures,
-                           sessionsharing, correlation, provisioning, mapping lists, exports
-lib/pgnsuite/              files shared byte-for-byte with the other PGN suite plugins
+                           correlation, provisioning, entitlement, accessreport, report,
+                           loginfailures, session, sessionlog, sessionsharing, useraccess,
+                           dashboard, menu, profile, ...)
+front/                     controllers: config.form, pbi (Insights + Report), useraccess,
+                           loginfailures, session, correlation, provisioning, mapping lists,
+                           one-shot backfills, exports
+lib/pgnsuite/              files shared byte-for-byte with the other PGN suite plugins; a
+                           divergent copy would silently win for the whole suite
 tests/                     offline suites, run each with a bare PHP CLI
-docs/                      the Indonesian manual and earlier deployment checklists
 ```
 
-Run the suites with `php tests/<name>_test.php`; each exits non-zero on a failure.
+Run the suites with `php tests/<name>_test.php`; each exits non-zero on a failure, so check the
+exit status rather than grepping the output — a fatal error prints no `FAIL`.
 
 ## License
 
-GPL-3.0-or-later. See [LICENSE](LICENSE).
+GPL-3.0-or-later. The full text ships as `LICENSE` in the published repository.

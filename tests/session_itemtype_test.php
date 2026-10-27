@@ -161,6 +161,40 @@ namespace {
     check($S::getSpecificValueToDisplay('asset', ['asset' => 'x']) === 'PARENT',
           'any other column falls through to core');
 
+    // --- v4.8.0: Type and Login Source as "Label(value)" --------------------------------
+    check($S::getSpecificValueToDisplay('type', ['type' => 'normal', 'type_label' => 'Normal']) === 'Normal(normal)',
+          'Type reads as JumpServer\'s own export shows it');
+    check($S::getSpecificValueToDisplay('login_from', ['login_from' => 'WT', 'login_from_label' => 'Web Terminal']) === 'Web Terminal(WT)',
+          'and so does Login Source, instead of the bare code');
+
+    // Every row imported before 4.8.0 looks like this until the one-shot
+    // backfill reaches it - and some never will, because JumpServer rotates
+    // its own history. Empty must read as "not known", not as a type.
+    $r = $S::getSpecificValueToDisplay('type', ['type' => '', 'type_label' => '']);
+    check(str_contains($r, 'mdash') && !str_contains($r, '()'), 'an unknown Type is a dash, not an empty pair of brackets');
+    $r = $S::getSpecificValueToDisplay('login_from', ['login_from' => '', 'login_from_label' => '']);
+    check(str_contains($r, 'mdash'), 'an unknown Login Source likewise');
+
+    // Half a pair: show what is known, invent nothing.
+    check($S::getSpecificValueToDisplay('login_from', ['login_from' => 'WT', 'login_from_label' => '']) === 'WT',
+          'a value with no label shows the value alone');
+    check($S::getSpecificValueToDisplay('type', ['type' => '', 'type_label' => 'Normal']) === 'Normal',
+          'a label with no value shows the label alone');
+
+    // These come from JumpServer, so they are escaped here - unlike the card,
+    // Search does not escape a `specific` renderer's output.
+    $r = $S::getSpecificValueToDisplay('type', ['type' => 'x', 'type_label' => '<b>N</b>']);
+    check(!str_contains($r, '<b>'), 'markup in a label is escaped');
+
+    // Both columns must declare the label as an additional field, or Search
+    // never selects it and every cell silently falls back to the bare value.
+    $by_field = [];
+    foreach ($opts as $o) { if (isset($o['field'])) { $by_field[$o['field']] = $o; } }
+    check(in_array('type_label', $by_field['type']['additionalfields'] ?? [], true),
+          'the Type option pulls type_label, or the label is never fetched');
+    check(in_array('login_from_label', $by_field['login_from']['additionalfields'] ?? [], true),
+          'and the Login Source option pulls login_from_label');
+
     // --- the criteria dropdowns --------------------------------------------------------
     // Without these, a criterion on Result is a free-text box against a
     // tinyint, where typing "Failed" matches nothing.

@@ -313,6 +313,13 @@ function plugin_integrasipaman_install(): bool
         // One row per JumpServer terminal session. `jms_id` = JumpServer
         // session id, dedup key; UNIQUE for the same race reason as the
         // commands table above.
+        //
+        // v4.8.0 added `type`, `type_label` and `login_from_label`.
+        // JumpServer sends `type` and `login_from` as {value,label} pairs,
+        // and both halves are kept because neither alone does the job: the
+        // value is the stable key to filter on, the label is what the
+        // console shows and what a reader recognises. A label can be
+        // renamed or localised; a bare value is not what anyone asked for.
         $query = "CREATE TABLE `$sessions_table` (
             `id` INT {$default_key_sign} NOT NULL AUTO_INCREMENT,
             `jms_id` VARCHAR(64) NOT NULL DEFAULT '',
@@ -323,6 +330,9 @@ function plugin_integrasipaman_install(): bool
             `account` VARCHAR(191) NOT NULL DEFAULT '',
             `protocol` VARCHAR(32) NOT NULL DEFAULT '',
             `login_from` VARCHAR(32) NOT NULL DEFAULT '',
+            `type` VARCHAR(32) NOT NULL DEFAULT '',
+            `type_label` VARCHAR(64) NOT NULL DEFAULT '',
+            `login_from_label` VARCHAR(64) NOT NULL DEFAULT '',
             `remote_addr` VARCHAR(45) NOT NULL DEFAULT '',
             `duration` INT NOT NULL DEFAULT 0,
             `command_amount` INT NOT NULL DEFAULT 0,
@@ -661,6 +671,85 @@ function plugin_integrasipaman_install(): bool
         }
     }
 
+    // --- v4.8.0: user-group membership ------------------------------------
+    // The rule cache stores group members as JSON, which answers "who may
+    // reach this Computer" but cannot answer "which assets may this person
+    // reach through a group". Group membership is the missing leg, so it
+    // gets tables of its own. `permrules` is deliberately left as it is: a
+    // join-table rewrite would change the live, verified Computer tab.
+    //
+    // Two tables, not one: five of the eleven groups on the probe instance
+    // have no members at all. A join table alone would make an empty group
+    // vanish from the group list, and the report must be able to say "this
+    // group exists and grants access to nobody".
+    $usergroups_table = 'glpi_plugin_jumpserver_usergroups';
+
+    if (!$DB->tableExists($usergroups_table)) {
+        $default_charset   = DBConnection::getDefaultCharset();
+        $default_collation = DBConnection::getDefaultCollation();
+        $default_key_sign  = DBConnection::getDefaultPrimaryKeySignOption();
+
+        // `plugin_jumpserver_connections_id` is
+        // PluginIntegrasipamanConnection::FK spelled literally: connection
+        // .class.php is not loaded yet at this point in install().
+        //
+        // A row with `jms_id` = '' is the pull marker (the same NONE_MARKER
+        // idea assetperms uses): it records that a complete pull ran even
+        // when the JumpServer has no groups. Without it, "zero groups" and
+        // "never collected" would look identical on the report.
+        $query = "CREATE TABLE `$usergroups_table` (
+            `id` INT {$default_key_sign} NOT NULL AUTO_INCREMENT,
+            `jms_id` VARCHAR(64) NOT NULL DEFAULT '',
+            `name` VARCHAR(191) NOT NULL DEFAULT '',
+            `users_amount` INT UNSIGNED NOT NULL DEFAULT 0,
+            `date_pulled` TIMESTAMP NULL DEFAULT NULL,
+            `plugin_jumpserver_connections_id` INT {$default_key_sign} NOT NULL DEFAULT 0,
+            `entities_id` INT {$default_key_sign} NOT NULL DEFAULT 0,
+            PRIMARY KEY (`id`),
+            UNIQUE KEY `connection_group` (`plugin_jumpserver_connections_id`, `jms_id`),
+            KEY `entities_id` (`entities_id`)
+        ) ENGINE=InnoDB DEFAULT CHARSET={$default_charset} COLLATE={$default_collation}";
+
+        if (!$DB->doQuery($query)) {
+            trigger_error(sprintf('Unable to create table %s: %s', $usergroups_table, $DB->error()), E_USER_WARNING);
+            return false;
+        }
+    }
+
+    $groupmembers_table = 'glpi_plugin_jumpserver_groupmembers';
+
+    if (!$DB->tableExists($groupmembers_table)) {
+        $default_charset   = DBConnection::getDefaultCharset();
+        $default_collation = DBConnection::getDefaultCollation();
+        $default_key_sign  = DBConnection::getDefaultPrimaryKeySignOption();
+
+        // One row per (group, user). The UUIDs are the report's join keys;
+        // login and display are what usermap rows can be matched against to
+        // reach a GLPI user without guessing.
+        $query = "CREATE TABLE `$groupmembers_table` (
+            `id` INT {$default_key_sign} NOT NULL AUTO_INCREMENT,
+            `user_groups_jms_id` VARCHAR(64) NOT NULL DEFAULT '',
+            `user_jms_id` VARCHAR(64) NOT NULL DEFAULT '',
+            `user_login` VARCHAR(191) NOT NULL DEFAULT '',
+            `user_display` VARCHAR(191) NOT NULL DEFAULT '',
+            `date_pulled` TIMESTAMP NULL DEFAULT NULL,
+            `plugin_jumpserver_connections_id` INT {$default_key_sign} NOT NULL DEFAULT 0,
+            `entities_id` INT {$default_key_sign} NOT NULL DEFAULT 0,
+            PRIMARY KEY (`id`),
+            UNIQUE KEY `connection_group_user` (`plugin_jumpserver_connections_id`, `user_groups_jms_id`, `user_jms_id`),
+            KEY `user_jms_id` (`user_jms_id`),
+            KEY `user_groups_jms_id` (`user_groups_jms_id`),
+            KEY `user_login` (`user_login`),
+            KEY `user_display` (`user_display`),
+            KEY `entities_id` (`entities_id`)
+        ) ENGINE=InnoDB DEFAULT CHARSET={$default_charset} COLLATE={$default_collation}";
+
+        if (!$DB->doQuery($query)) {
+            trigger_error(sprintf('Unable to create table %s: %s', $groupmembers_table, $DB->error()), E_USER_WARNING);
+            return false;
+        }
+    }
+
     // --- schema-convention migration (v3.2.0) -----------------------------
     // v3.0.1 created three columns that GLPI 11 counts as violations on the
     // Setup page: two `*_id` columns without UNSIGNED, and one DATETIME.
@@ -953,6 +1042,32 @@ function plugin_integrasipaman_install(): bool
                 PluginIntegrasipamanConfig::CONFIG_CONTEXT,
                 ['corr_quality_migrated' => '1']
             );
+        }
+    }
+
+    // v4.8.0: the session TYPE and the readable LOGIN SOURCE.
+    //
+    // mapSessionEntry() kept only `login_from['value']` ("WT") and dropped
+    // the label ("Web Terminal"); `type` was never read at all. Both are in
+    // every /terminal/sessions/ entry, so new rows fill themselves from here
+    // on - but EXISTING rows cannot be back-filled from local data: unlike
+    // the logs table, this one keeps no raw JSON. And insertDedup() skips any
+    // jms_id already present, so a re-pull will not refresh them either.
+    // front/backfillsessionmeta.php exists for exactly that gap: it re-reads
+    // the API and UPDATEs by jms_id.
+    //
+    // Guarded per column, not by a marker, so a run that half-succeeded is
+    // simply completed by the next one.
+    if ($DB->tableExists($sessions_table)) {
+        foreach ([
+            'type'             => "VARCHAR(32) NOT NULL DEFAULT '' AFTER `login_from`",
+            'type_label'       => "VARCHAR(64) NOT NULL DEFAULT '' AFTER `type`",
+            'login_from_label' => "VARCHAR(64) NOT NULL DEFAULT '' AFTER `type_label`",
+        ] as $col => $spec) {
+            if (!$DB->fieldExists($sessions_table, $col)
+                && !$DB->doQuery("ALTER TABLE `$sessions_table` ADD COLUMN `$col` $spec")) {
+                trigger_error("Unable to add $sessions_table.$col: " . $DB->error(), E_USER_WARNING);
+            }
         }
     }
 

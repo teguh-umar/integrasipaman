@@ -431,5 +431,71 @@ check(str_contains(substr($hook, 0, (int) $cq_at), 'corr_quality_migrated'),
 check(!preg_match('/UPDATE[^\n]*SET[^\n]*`ip_mismatch`\s*=\s*1/i', $hook),
       'the migration does not invent a mismatch value it has not computed');
 
+// --- v4.8.0: group membership, the Phase 1 gap ---------------------------
+// Two tables, not one: an empty group still needs a row (name and count), and
+// five groups on the instance the probe ran against have no members at all.
+// A join table alone would make those five disappear from the group list.
+//
+// The marker for "membership has been collected" lives in `usergroups` with
+// an empty `jms_id`, the same NONE_MARKER idea assetperms uses. Without it an
+// empty-but-successful pull would be indistinguishable from a pull that never
+// ran, and the report would have to warn forever on an instance with no
+// groups.
+foreach ([
+    'usergroups'   => 'glpi_plugin_jumpserver_usergroups',
+    'groupmembers' => 'glpi_plugin_jumpserver_groupmembers',
+] as $var => $table_name) {
+    check(preg_match(
+        '/\$' . $var . "_table\s*=\s*'" . preg_quote($table_name, '/') . "';\s*\n\s*"
+        . 'if \(!\$DB->tableExists\(\$' . $var . '_table\)\)/',
+        $hook
+    ) === 1, "$table_name is created inside its own tableExists() guard");
+}
+
+$groups_create = '';
+$groups_at     = strpos($hook, 'CREATE TABLE `$usergroups_table`');
+if ($groups_at !== false) {
+    $groups_end    = strpos($hook, '";', $groups_at);
+    $groups_create = $groups_end === false ? '' : substr($hook, $groups_at, $groups_end - $groups_at);
+}
+check($groups_create !== '', 'the user-group CREATE was located');
+check(str_contains($groups_create, '`users_amount` INT UNSIGNED NOT NULL DEFAULT 0'),
+      'a group stores the member count JumpServer reports, so an empty group can still be shown');
+check(str_contains($groups_create, '`date_pulled` TIMESTAMP NULL DEFAULT NULL'),
+      'a group carries the pull time as TIMESTAMP, never DATETIME');
+check(str_contains($groups_create, '`plugin_jumpserver_connections_id` INT {$default_key_sign}'),
+      'a group carries the connection FK');
+check(str_contains($groups_create, '`entities_id` INT {$default_key_sign}'),
+      'a group carries an entity');
+check(str_contains($groups_create, 'UNIQUE KEY `connection_group` (`plugin_jumpserver_connections_id`, `jms_id`)'),
+      'a group id is unique within its connection, not across two JumpServers');
+
+$members_create = '';
+$members_at     = strpos($hook, 'CREATE TABLE `$groupmembers_table`');
+if ($members_at !== false) {
+    $members_end    = strpos($hook, '";', $members_at);
+    $members_create = $members_end === false ? '' : substr($hook, $members_at, $members_end - $members_at);
+}
+check($members_create !== '', 'the group-member CREATE was located');
+foreach ([
+    '`user_groups_jms_id` VARCHAR(64) NOT NULL DEFAULT \'\'',
+    '`user_jms_id` VARCHAR(64) NOT NULL DEFAULT \'\'',
+    '`user_login` VARCHAR(191) NOT NULL DEFAULT \'\'',
+    '`user_display` VARCHAR(191) NOT NULL DEFAULT \'\'',
+] as $column) {
+    check(str_contains($members_create, $column),
+          'a membership stores the JumpServer identifiers the report matches on: ' . $column);
+}
+check(str_contains($members_create, '`date_pulled` TIMESTAMP NULL DEFAULT NULL'),
+      'a membership carries the pull time as TIMESTAMP, never DATETIME');
+check(str_contains($members_create, '`plugin_jumpserver_connections_id` INT {$default_key_sign}'),
+      'a membership carries the connection FK');
+check(str_contains($members_create, '`entities_id` INT {$default_key_sign}'),
+      'a membership carries an entity');
+check(str_contains($members_create, 'UNIQUE KEY `connection_group_user` (`plugin_jumpserver_connections_id`, `user_groups_jms_id`, `user_jms_id`)'),
+      'a member appears once per group within its connection');
+check(str_contains($members_create, 'KEY `user_jms_id` (`user_jms_id`)'),
+      'members are indexable by JumpServer user id, the per-user report path');
+
 echo $fails === 0 ? "\nALL PASS\n" : "\n$fails FAILURE(S)\n";
 exit($fails === 0 ? 0 : 1);

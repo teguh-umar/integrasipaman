@@ -661,7 +661,11 @@ foreach (['commands', 'sessions', 'permrules', 'assetmap', 'usermap', 'nodemap',
     check(preg_match("/\['glpi_plugin_jumpserver_$t',\s+'\w+',\s+'\w+'\],/", $hook) === 1, "$t: its unique key is scoped to the connection");
 }
 check(str_contains($hook, 'ADD UNIQUE KEY `$scoped_key` (`$connection_fk`, `$scoped_col`)'), 'the connection is the first column of each');
-check(preg_match('/\$DB->numrows\(\$key_parts\) !== 1\) \{\s*continue;/', $hook) === 1, 'a key that is already scoped is left alone (install runs on every upgrade)');
+foreach (['usergroups', 'groupmembers'] as $t) {
+    $name = "glpi_plugin_jumpserver_$t";
+    check(array_key_exists($name, $C::STAMPED_TABLES) && $C::STAMPED_TABLES[$name] === null,
+          "$t rows are stamped with their connection and entity, not matched to a Computer");
+}check(preg_match('/\$DB->numrows\(\$key_parts\) !== 1\) \{\s*continue;/', $hook) === 1, 'a key that is already scoped is left alone (install runs on every upgrade)');
 check($at('PluginIntegrasipamanConnection::migrate()') < $at("['glpi_plugin_jumpserver_commands',    'jms_id',"),
       'the keys are scoped after the rows have been given their connection');
 check(str_contains($hook, 'connection_scope_grandfathered') && $at('connection_scope_grandfathered') < $at('PluginIntegrasipamanConnection::grandfatherScope()'),
@@ -705,6 +709,7 @@ $expect = [
     'inc/dashboard.class.php'     => 3,   // count, grouped count, rows
     'inc/accesshistory.class.php' => 5,
     'inc/useraccess.class.php'    => 4,   // the sessions and commands; NOT the name lookup, see the class
+    'inc/accessreport.class.php'  => 3,   // the group list, the memberships, the grant rows; NOT the name lookup
     'inc/entitlement.class.php'   => 2,
     'front/correlation.php'       => 4,
     'front/provisioning.php'      => 2,   // the tab counts and the table

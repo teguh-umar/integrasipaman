@@ -122,6 +122,15 @@ class PluginIntegrasipamanTerminalPull extends CommonDBTM
             'account'        => mb_substr((string) ($e['account'] ?? ''), 0, 191),
             'protocol'       => mb_substr((string) ($e['protocol'] ?? ''), 0, 32),
             'login_from'     => mb_substr((string) ($e['login_from']['value'] ?? ''), 0, 32),
+            // v4.8.0: keep the readable half too. Until now only the code
+            // was stored, so the page could offer "WT" where the user's own
+            // JumpServer export reads "Web Terminal(WT)". `type` was not
+            // read at all. Both arrive as {value,label}; a scalar is
+            // tolerated in case a version sends one, and an absent key
+            // leaves the column at its default rather than inventing a word.
+            'type'             => mb_substr((string) (is_array($e['type'] ?? null) ? ($e['type']['value'] ?? '') : ($e['type'] ?? '')), 0, 32),
+            'type_label'       => mb_substr((string) (is_array($e['type'] ?? null) ? ($e['type']['label'] ?? '') : ''), 0, 64),
+            'login_from_label' => mb_substr((string) ($e['login_from']['label'] ?? ''), 0, 64),
             'remote_addr'    => mb_substr((string) ($e['remote_addr'] ?? ''), 0, 45),
             'duration'       => self::durationToSeconds($e['duration'] ?? 0),
             'command_amount' => (int) ($e['command_amount'] ?? 0),
@@ -350,6 +359,119 @@ class PluginIntegrasipamanTerminalPull extends CommonDBTM
     public static function backfillMonth(string $ym): array
     {
         return self::pullMonth($ym);
+    }
+
+    /**
+     * Fill `type`, `type_label` and `login_from_label` on sessions already
+     * stored (v4.8.0). One-shot, run by hand from
+     * front/backfillsessionmeta.php.
+     *
+     * Why this cannot be done any other way:
+     *   - the sessions table keeps **no raw JSON**, unlike the logs table
+     *     whose `message` column let v4.5.2 read a new field out of history
+     *     for free. There is nothing local to back-fill from.
+     *   - insertDedup() SKIPS any jms_id already present, so re-running the
+     *     pull - or a month back-fill - imports nothing and refreshes
+     *     nothing. Without this method the columns would stay empty on every
+     *     row older than 4.8.0, for ever.
+     *
+     * So it re-reads the API and UPDATEs by jms_id. It touches only the three
+     * columns, and only rows of the CURRENT connection: another JumpServer
+     * may legitimately use the same session id.
+     *
+     * Safe to run twice. A row whose three columns are already set is counted
+     * as `unchanged` and not written again, so a second run is cheap and
+     * cannot churn history.
+     *
+     * Rows the API no longer returns (rotated out of its retention) simply
+     * keep their empty columns - reported as `missing`, not as an error.
+     *
+     * @return array{fetched:int, updated:int, unchanged:int, nomatch:int, complete:bool, ok:bool}
+     */
+    public static function refreshSessionMeta(): array
+    {
+        global $DB;
+
+        [$base_url, $access_key_id, $access_key_secret, $org_id] = PluginIntegrasipamanConnection::currentCredentials();
+
+        $acc = ['fetched' => 0, 'updated' => 0, 'unchanged' => 0, 'nomatch' => 0];
+
+        if ($base_url === '' || $access_key_id === '' || $access_key_secret === '') {
+            trigger_error('JumpServer URL / Access Key not configured; session metadata refresh skipped.', E_USER_WARNING);
+
+            return $acc + ['complete' => false, 'ok' => false];
+        }
+
+        // Newest first, no date filter: this walks the whole history the API
+        // still holds, exactly like the session-join back-fill.
+        $path = self::SESSIONS_PATH . '?' . http_build_query(['order' => '-date_start']);
+
+        $complete = PluginIntegrasipamanJmsApi::signedGetEach(
+            $path, $base_url, $access_key_id, $access_key_secret, $org_id,
+            static function (array $page) use (&$acc, $DB): void {
+                foreach ($page as $entry) {
+                    if (!is_array($entry)) {
+                        continue;
+                    }
+
+                    $acc['fetched']++;
+
+                    $mapped = self::mapSessionEntry($entry);
+                    $jms_id = (string) $mapped['jms_id'];
+                    if ($jms_id === '') {
+                        continue;
+                    }
+
+                    $meta = [
+                        'type'             => $mapped['type'],
+                        'type_label'       => $mapped['type_label'],
+                        'login_from_label' => $mapped['login_from_label'],
+                    ];
+
+                    // Nothing to write for an entry that carries neither half.
+                    if (implode('', $meta) === '') {
+                        $acc['unchanged']++;
+                        continue;
+                    }
+
+                    $where = ['jms_id' => $jms_id] + PluginIntegrasipamanConnection::ownRows();
+
+                    $existing = $DB->request([
+                        'SELECT' => ['id', 'type', 'type_label', 'login_from_label'],
+                        'FROM'   => self::SESSIONS_TABLE,
+                        'WHERE'  => $where,
+                        'LIMIT'  => 1,
+                    ])->current();
+
+                    if ($existing === null) {
+                        $acc['nomatch']++;
+                        continue;
+                    }
+
+                    $same = (string) ($existing['type'] ?? '') === $meta['type']
+                        && (string) ($existing['type_label'] ?? '') === $meta['type_label']
+                        && (string) ($existing['login_from_label'] ?? '') === $meta['login_from_label'];
+
+                    if ($same) {
+                        $acc['unchanged']++;
+                        continue;
+                    }
+
+                    if ($DB->update(self::SESSIONS_TABLE, $meta, ['id' => (int) $existing['id']])) {
+                        $acc['updated']++;
+                    } else {
+                        trigger_error('Unable to refresh session metadata: ' . $DB->error(), E_USER_WARNING);
+                    }
+                }
+            },
+            self::TERMINAL_PAGE_SIZE,
+            self::TERMINAL_MAX_PAGES
+        );
+
+        return $acc + [
+            'complete' => $complete,
+            'ok'       => !($complete === false && $acc['fetched'] === 0),
+        ];
     }
 
     /**

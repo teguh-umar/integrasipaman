@@ -110,6 +110,8 @@ class PluginIntegrasipamanConnection
         'glpi_plugin_jumpserver_platformmap'  => null,
         'glpi_plugin_jumpserver_permrules'    => null,
         'glpi_plugin_jumpserver_assetperms'   => 'computers_id',
+        'glpi_plugin_jumpserver_usergroups'   => null,
+        'glpi_plugin_jumpserver_groupmembers' => null,
     ];
 
     private const ASSETMAP_TABLE = 'glpi_plugin_jumpserver_assetmap';

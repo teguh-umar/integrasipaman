@@ -184,6 +184,27 @@ $db->canned = [
     [['executed_at' => '2026-09-23 09:20:00', 'asset' => 'db-prod-01(10.0.0.5)',
       'account' => 'root', 'command' => 'rm -rf /var/log/x', 'remote_addr' => '10.20.3.44',
       'risk_category' => 'Destructive', 'priority' => 'HIGH', 'catatan' => 'Aset Production']],  // commands
+    // Permissions pane: the snapshot, this person's membership, the mapped
+    // account, then the rules. One direct rule and one through a group.
+    [
+        ['jms_id' => 'G-OPS', 'name' => 'Operations', 'users_amount' => 1, 'date_pulled' => date('Y-m-d H:i:s')],
+        ['jms_id' => '', 'name' => '', 'users_amount' => 0, 'date_pulled' => date('Y-m-d H:i:s')],
+    ],
+    [['user_groups_jms_id' => 'G-OPS', 'user_jms_id' => 'U-BUDI', 'user_login' => 'budi', 'user_display' => 'Budi Santoso']],
+    [['jms_user' => 'budi', 'parsed_login' => 'budi']],
+    [
+        ['computers_id' => 46, 'computer_name' => 'example-app-46',
+         'rule_jms_id' => 'R-DIRECT', 'rule_name' => 'Direct budi',
+         'users_json' => json_encode([['id' => 'U-BUDI', 'display' => 'budi']]),
+         'user_groups_json' => '[]', 'accounts' => 'root', 'actions' => 'connect',
+         'is_valid' => 1, 'is_expired' => 0, 'date_expired' => null],
+        ['computers_id' => 47, 'computer_name' => 'example-db-47',
+         'rule_jms_id' => 'R-GROUP', 'rule_name' => 'Operations rule',
+         'users_json' => '[]',
+         'user_groups_json' => json_encode([['id' => 'G-OPS', 'display' => 'Operations']]),
+         'accounts' => 'root', 'actions' => 'connect',
+         'is_valid' => 1, 'is_expired' => 0, 'date_expired' => null],
+    ],
 ];
 ob_start();
 $A::displayTabContentForItem(new User(42));
@@ -193,7 +214,11 @@ check(str_contains($html, 'db-prod-01(10.0.0.5)'), 'the asset the user reached r
 check(str_contains($html, '10.20.3.44'), 'the remote IP renders - "dimana" is half the question');
 check(str_contains($html, 'rm -rf /var/log/x'), 'the command renders');
 check(str_contains($html, '2026-09-23 09:14:00'), 'the timestamp renders');
-check(substr_count($html, 'class="tab-pane') === 2, 'two sub-panes: sessions and commands');
+check(substr_count($html, 'class="tab-pane') === 3, 'three sub-panes: sessions, commands and permissions');
+check(str_contains($html, 'id="integrasipaman-usr-permissions"') && str_contains($html, 'Operations rule'),
+      'the permissions pane shows the rule that grants access through a group');
+check(str_contains($html, 'Group held: Operations'),
+      'and discloses every group the person is in, so a group that grants nothing is not mistaken for a missing one');
 check(str_contains($html, 'data-bs-toggle="tab"'), 'sub-tabs switch client-side - a GLPI tab is loaded by AJAX');
 check(!str_contains($html, 'hr_page=') && !str_contains($html, 'p_sessions='),
       'no server-side pager inside the tab - a link would navigate away from the User form');
@@ -219,6 +244,34 @@ check(in_array(urlencode('budi.santoso(Budi Santoso)'), $qm[1] ?? [], true),
 
 check(str_contains(strtolower($html), 'retention') || str_contains(strtolower($html), 'retensi'),
       'the tab discloses that history is bounded by retention');
+
+// --- membership not collected: the pane says so, and still shows direct ---
+$db = new FakeDB(); $GLOBALS['DB'] = $db;
+$db->canned = [
+    [['jms_user' => 'budi']],
+    [['sessions' => 0, 'assets' => 0, 'failed' => 0]],
+    [['high_risk' => 0]],
+    [],
+    [],
+    [],                                                                       // no group rows at all
+    [],                                                                       // no memberships
+    [['jms_user' => 'budi', 'parsed_login' => 'budi']],
+    [
+        ['computers_id' => 46, 'computer_name' => 'example-app-46',
+         'rule_jms_id' => 'R-DIRECT', 'rule_name' => 'Direct budi',
+         'users_json' => json_encode([['id' => 'U-BUDI', 'display' => 'budi']]),
+         'user_groups_json' => '[]', 'accounts' => 'root', 'actions' => 'connect',
+         'is_valid' => 1, 'is_expired' => 0, 'date_expired' => null],
+    ],
+];
+grant(READ);
+ob_start();
+$A::displayTabContentForItem(new User(42));
+$uncollected = ob_get_clean();
+check(str_contains(strtolower($uncollected), 'never been collected'),
+      'without a membership snapshot the permissions pane says group access cannot be counted');
+check(str_contains($uncollected, 'example-app-46'),
+      'and still shows the direct grant it can prove');
 
 // --- a full pane must say it may not be the whole story -------------------
 // The sessions pane knows its total and says "27 of 91". The commands pane

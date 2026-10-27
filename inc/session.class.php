@@ -198,12 +198,20 @@ class PluginIntegrasipamanSession extends CommonDBTM implements \Glpi\Search\Def
             'datatype'      => 'string',
             'massiveaction' => false,
         ];
+        // v4.8.0: Login Source reads as "Web Terminal(WT)" where the label is
+        // known, and falls back to the bare code where it is not - which is
+        // every row imported before 4.8.0 until
+        // front/backfillsessionmeta.php has run. It stays keyed on
+        // `login_from`, the stable value, so a criterion still filters on
+        // the code and a saved search survives a label change.
         $tab[] = [
             'id'            => 8,
             'table'         => self::getTable(),
             'field'         => 'login_from',
             'name'          => __('Login Source', 'integrasipaman'),
-            'datatype'      => 'string',
+            'datatype'      => 'specific',
+            'searchtype'    => ['equals', 'contains'],
+            'additionalfields' => ['login_from_label'],
             'massiveaction' => false,
         ];
         $tab[] = [
@@ -264,6 +272,21 @@ class PluginIntegrasipamanSession extends CommonDBTM implements \Glpi\Search\Def
             'datatype'      => 'string',
             'massiveaction' => false,
         ];
+        // v4.8.0. Keyed on `type`, the stable value ("normal"), and rendered
+        // with its label ("Normal(normal)") the way JumpServer's own export
+        // shows it. Empty on every row imported before 4.8.0 until
+        // front/backfillsessionmeta.php has run - and empty must read as
+        // "not known", never as a type.
+        $tab[] = [
+            'id'               => 16,
+            'table'            => self::getTable(),
+            'field'            => 'type',
+            'name'             => __('Type', 'integrasipaman'),
+            'datatype'         => 'specific',
+            'searchtype'       => ['equals', 'contains'],
+            'additionalfields' => ['type_label'],
+            'massiveaction'    => false,
+        ];
         $tab[] = [
             'id'            => 80,
             'table'         => 'glpi_entities',
@@ -310,9 +333,51 @@ class PluginIntegrasipamanSession extends CommonDBTM implements \Glpi\Search\Def
                 return empty($values[$field])
                     ? '<span class="badge bg-blue-lt">' . htmlescape(__('Running', 'integrasipaman')) . '</span>'
                     : htmlescape(__('Finished', 'integrasipaman'));
+
+            // v4.8.0. Both render "Label(value)", as JumpServer's own export
+            // does. An empty value means the row predates 4.8.0 and the
+            // one-shot backfill has not reached it; it shows a dash, because
+            // "not known" must not look like a type or a source.
+            case 'type':
+                return self::labelledValue(
+                    (string) ($values[$field] ?? ''),
+                    (string) ($values['type_label'] ?? '')
+                );
+
+            case 'login_from':
+                return self::labelledValue(
+                    (string) ($values[$field] ?? ''),
+                    (string) ($values['login_from_label'] ?? '')
+                );
         }
 
         return parent::getSpecificValueToDisplay($field, $values, $options);
+    }
+
+    /**
+     * A {value,label} pair as one cell: "Label(value)" when both halves are
+     * known, the value alone when the label is not, and a dash when there is
+     * nothing (v4.8.0).
+     *
+     * The dash matters. Every session imported before 4.8.0 has these
+     * columns empty until front/backfillsessionmeta.php has run, and some
+     * will stay empty for good because JumpServer rotates its own history
+     * out of reach. An empty cell must read as "not known", never as a type
+     * or a source that was actually recorded.
+     */
+    private static function labelledValue(string $value, string $label): string
+    {
+        if ($value === '' && $label === '') {
+            return '<span class="text-muted">&mdash;</span>';
+        }
+        if ($label === '') {
+            return htmlescape($value);
+        }
+        if ($value === '') {
+            return htmlescape($label);
+        }
+
+        return htmlescape($label . '(' . $value . ')');
     }
 
     /**

@@ -662,11 +662,19 @@ class PluginIntegrasipamanConfig extends CommonDBTM
         // v4.5.1: the terminal back-fill gets a way in too. It had been
         // reachable only by typing its URL since it was written, which is why
         // the session-join one was built the same way without anyone noticing.
+        // v4.8.0: the session-metadata one-shot sits beside it, for the same
+        // reason - a page nobody can reach is a page nobody runs, and this
+        // one has to be run once or every session older than 4.8.0 keeps an
+        // empty Type for ever.
         $terminal_backfill = $defaults_mode ? '' :
             '<a class="btn btn-sm btn-outline-secondary text-nowrap" href="'
             . Plugin::getWebDir('integrasipaman') . '/front/backfill.php">'
             . '<i class="ti ti-calendar-down me-1"></i>'
-            . htmlescape(__('Backfill a month', 'integrasipaman')) . '</a>';
+            . htmlescape(__('Backfill a month', 'integrasipaman')) . '</a>'
+            . ' <a class="btn btn-sm btn-outline-secondary text-nowrap" href="'
+            . Plugin::getWebDir('integrasipaman') . '/front/backfillsessionmeta.php">'
+            . '<i class="ti ti-tag me-1"></i>'
+            . htmlescape(__('Backfill session type', 'integrasipaman')) . '</a>';
 
         self::openSection('terminal', $sections['terminal'], $terminal_backfill, $defaults_mode);
 

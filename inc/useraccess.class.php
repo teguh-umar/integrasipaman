@@ -31,6 +31,7 @@ if (!defined('GLPI_ROOT')) {
 }
 
 require_once __DIR__ . '/connection.class.php';
+require_once __DIR__ . '/accessreport.class.php';
 
 class PluginIntegrasipamanUserAccess extends CommonGLPI
 {
@@ -246,9 +247,10 @@ class PluginIntegrasipamanUserAccess extends CommonGLPI
         $summary  = self::summary($users, $since);
         $sessions = self::sessions($users, $since, self::ROW_LIMIT);
         $commands = self::commands($users, $since, self::ROW_LIMIT);
+        $access   = PluginIntegrasipamanAccessReport::forUser((int) $item->getID());
 
         self::renderHeader($summary, $users);
-        self::renderPanes($sessions, $commands, $summary);
+        self::renderPanes($sessions, $commands, $summary, $access);
         self::renderReportLinks($users);
 
         return true;
@@ -288,17 +290,27 @@ class PluginIntegrasipamanUserAccess extends CommonGLPI
     }
 
     /**
-     * Two sub-tabs. Both panes render in this one AJAX load and Bootstrap
+     * Three sub-tabs. Every pane renders in this one AJAX load and Bootstrap
      * switches between them: a GLPI tab's content is fetched by AJAX, so a
      * server-side pager link would navigate away from the User form
-     * entirely. That is why each pane shows the newest ROW_LIMIT rows and
-     * says so, instead of paging.
+     * entirely. That is why each history pane shows the newest ROW_LIMIT rows
+     * and says so, instead of paging.
      *
      * Ids are prefixed with the plugin key: these nav-tabs nest inside the
      * shared PGN Suite tab on asset forms, and a collision there would
      * switch the wrong pane.
+     *
+     * @param list<array<string,mixed>> $sessions
+     * @param list<array<string,mixed>> $commands
+     * @param array{sessions:int,assets:int,failed:int,high_risk:int} $summary
+     * @param array{
+     *   identities: array<string,list<string>>,
+     *   groups: list<array<string,mixed>>,
+     *   rows: list<array<string,mixed>>,
+     *   membership: array{collected:bool,at:?string,stale:bool}
+     * } $access
      */
-    private static function renderPanes(array $sessions, array $commands, array $summary): void
+    private static function renderPanes(array $sessions, array $commands, array $summary, array $access): void
     {
         echo '<ul class="nav nav-tabs px-3" role="tablist">';
         echo '<li class="nav-item"><a class="nav-link active" href="#integrasipaman-usr-sessions"'
@@ -307,6 +319,10 @@ class PluginIntegrasipamanUserAccess extends CommonGLPI
         echo '<li class="nav-item"><a class="nav-link" href="#integrasipaman-usr-commands"'
             . ' data-bs-toggle="tab" data-bs-target="#integrasipaman-usr-commands" role="tab">'
             . htmlescape(__('Commands', 'integrasipaman')) . '</a></li>';
+        echo '<li class="nav-item"><a class="nav-link" href="#integrasipaman-usr-permissions"'
+            . ' data-bs-toggle="tab" data-bs-target="#integrasipaman-usr-permissions" role="tab">'
+            . htmlescape(__('Permissions', 'integrasipaman')) . ' <span class="badge bg-blue-lt">'
+            . count($access['rows']) . '</span></a></li>';
         echo '</ul>';
 
         echo '<div class="tab-content">';
@@ -356,7 +372,140 @@ class PluginIntegrasipamanUserAccess extends CommonGLPI
         );
         echo '</div>';
 
+        echo '<div class="tab-pane fade" id="integrasipaman-usr-permissions" role="tabpanel">';
+        self::renderPermissionsPane($access);
         echo '</div>';
+
+        echo '</div>';
+    }
+
+    /**
+     * What this person may reach, from the permission cache and the
+     * membership snapshot - never a live bastion call.
+     *
+     * One row per asset, with every way in kept separate. A group grant is
+     * attributed only when a membership row carries this person's login, so
+     * an uncollected snapshot means "cannot say", not "nothing".
+     *
+     * @param array{
+     *   identities: array<string,list<string>>,
+     *   groups: list<array<string,mixed>>,
+     *   rows: list<array<string,mixed>>,
+     *   membership: array{collected:bool,at:?string,stale:bool}
+     * } $access
+     */
+    private static function renderPermissionsPane(array $access): void
+    {
+        $membership = $access['membership'];
+
+        if (!$membership['collected']) {
+            echo '<div class="alert alert-warning m-3">';
+            echo htmlescape(__(
+                'Group membership has never been collected, so access granted through a group cannot be listed here. Only grants that name this person directly are shown; the group column is incomplete until the entitlement cron runs.',
+                'integrasipaman'
+            ));
+            echo '</div>';
+        } elseif ($membership['stale']) {
+            echo '<div class="alert alert-warning m-3">';
+            echo htmlescape(sprintf(
+                __('Group membership was last collected at %s. Group-granted access below is based on that snapshot and may be out of date.', 'integrasipaman'),
+                (string) ($membership['at'] ?? __('an unknown time', 'integrasipaman'))
+            ));
+            echo '</div>';
+        }
+
+        // Every group this person is in, including ones no rule uses: that
+        // answers "why does this not show up" before it is asked.
+        $group_names = [];
+        foreach ($access['groups'] as $group) {
+            $name = trim((string) ($group['name'] ?? ''));
+            $group_names[] = $name !== '' ? $name : (string) ($group['jms_id'] ?? '');
+        }
+        $group_names = array_values(array_filter($group_names, static fn (string $n): bool => $n !== ''));
+
+        if ($group_names !== []) {
+            echo '<div class="form-hint px-3 pt-3">' . htmlescape(sprintf(
+                _n('Group held: %s', 'Groups held: %s', count($group_names), 'integrasipaman'),
+                implode(', ', $group_names)
+            )) . '</div>';
+        }
+
+        echo '<div class="table-responsive"><table class="table table-sm table-striped card-table"><thead><tr>';
+        foreach ([
+            __('Asset', 'integrasipaman'),
+            __('Ways in', 'integrasipaman'),
+            __('Accounts', 'integrasipaman'),
+            __('Actions', 'integrasipaman'),
+            __('Status', 'integrasipaman'),
+        ] as $heading) {
+            echo '<th>' . htmlescape($heading) . '</th>';
+        }
+        echo '</tr></thead><tbody>';
+
+        if ($access['rows'] === []) {
+            $empty = $membership['collected']
+                ? __('No rule in the permission cache grants this user access.', 'integrasipaman')
+                : __('No rule names this user directly, and group-granted access cannot be checked yet.', 'integrasipaman');
+            echo '<tr><td colspan="5" class="text-muted">' . htmlescape($empty) . '</td></tr>';
+        }
+
+        foreach ($access['rows'] as $row) {
+            $asset = (string) ($row['computer_name'] ?? '');
+            if ($asset === '') {
+                $asset = '#' . (int) ($row['computers_id'] ?? 0);
+            }
+
+            echo '<tr><td>' . htmlescape($asset);
+            if ((string) ($row['computer_name'] ?? '') !== '') {
+                echo ' <span class="text-muted">(#' . (int) $row['computers_id'] . ')</span>';
+            }
+            echo '</td><td>';
+
+            $ways = [];
+            foreach ((array) ($row['paths'] ?? []) as $path) {
+                $via = (string) ($path['via'] ?? '');
+                if (($path['type'] ?? '') === 'group') {
+                    $member = (string) ($path['member_display'] ?? '');
+                    if (empty($path['group_known'])) {
+                        $member .= ' (' . __('membership unknown', 'integrasipaman') . ')';
+                    }
+                    $ways[] = '<span class="badge bg-blue-lt">' . htmlescape(__('Group', 'integrasipaman')) . '</span> '
+                        . htmlescape($member)
+                        . ($via !== '' ? ' <span class="text-muted">· ' . htmlescape($via) . '</span>' : '');
+                } else {
+                    $ways[] = '<span class="badge bg-secondary-lt">' . htmlescape(__('Direct', 'integrasipaman')) . '</span>'
+                        . ($via !== '' ? ' <span class="text-muted">· ' . htmlescape($via) . '</span>' : '');
+                }
+            }
+            echo implode('<br>', $ways);
+            if ($ways === []) {
+                echo '<span class="text-muted">—</span>';
+            }
+            echo '</td>';
+
+            echo '<td>' . htmlescape(implode(', ', array_map('strval', (array) ($row['accounts'] ?? [])))) . '</td>'
+                . '<td>' . htmlescape(implode(', ', array_map('strval', (array) ($row['actions'] ?? [])))) . '</td>'
+                . '<td>';
+
+            if (!empty($row['valid'])) {
+                echo htmlescape(__('Valid', 'integrasipaman'));
+            } else {
+                echo '<span class="badge bg-red-lt">' . htmlescape(__('Expired', 'integrasipaman')) . '</span>';
+            }
+            if ((int) ($row['expired_paths'] ?? 0) > 0 && !empty($row['valid'])) {
+                echo ' <span class="text-muted">(' . htmlescape(sprintf(
+                    __('%d expired path(s)', 'integrasipaman'),
+                    (int) $row['expired_paths']
+                )) . ')</span>';
+            }
+            echo '</td></tr>';
+        }
+
+        echo '</tbody></table></div>';
+
+        echo '<div class="form-hint px-3 pb-3">' . htmlescape(
+            __('Read from the permission cache the entitlement cron fills. A person can reach an asset directly, through a group, or both; every way in is listed rather than merged.', 'integrasipaman')
+        ) . '</div>';
     }
 
     /**

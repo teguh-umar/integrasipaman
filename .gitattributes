@@ -1,10 +1,24 @@
+# In THIS repo the plugin is the root, so the normalisation policy lives here.
+# (In the monorepo the repo root carries these two lines instead; that is the one
+# intended difference between the two copies of this file, and it must be
+# re-applied on every push.)
 * text=auto eol=lf
 *.php text eol=lf
 
-# Byte-exact, no line-ending normalisation: these three files are shared across
-# the plugin suite, and whichever plugin loads first supplies them to all of
-# them, so every copy must hash identically. Normalising them here would change
-# their bytes, and so their SHA, which is what the suite contract forbids.
-lib/pgnsuite/Menu.php -text
+# The suite's shared classes must stay BYTE-IDENTICAL across every plugin
+# that ships them: whichever plugin GLPI loads first declares the class, the
+# others' class_exists(..., false) guards skip theirs, so a divergent copy is
+# invisible until it is the one that wins.
+#
+# The repo root already marks these -text. That is not enough on its own:
+# `git archive HEAD:glpi/plugins/integrasipaman` - how this plugin's release
+# zip is built - resolves attributes from inside THAT subtree, not from the
+# repo root, so the root file is never consulted and the files came out
+# CRLF-converted (Menu.php: 8034 bytes / 219 CRLF against the canonical
+# 7815 / 0). Measured on the v4.6.0 zip, 2026-10-25.
+#
+# Keeping this file inside the plugin folder is what makes the zip match the
+# working tree.
 lib/pgnsuite/ConfigTab.php -text
 lib/pgnsuite/AssetTab.php -text
+lib/pgnsuite/Menu.php -text

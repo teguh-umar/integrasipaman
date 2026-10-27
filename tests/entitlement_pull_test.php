@@ -44,6 +44,7 @@ class FakeDB
         return new ArrayIterator(array_shift($this->canned) ?? []);
     }
     public function updateOrInsert($table, $params, $where) { $this->seen[] = ['UPSERT' => $table, 'p' => $params, 'w' => $where]; return true; }
+    public function insert($table, $params) { $this->seen[] = ['INSERT' => $table, 'p' => $params]; return true; }
     public function delete($table, $where) { $this->seen[] = ['DELETE' => $table, 'w' => $where]; return true; }
     public function update($table, $params, $where) { $this->seen[] = ['UPDATE' => $table, 'p' => $params, 'w' => $where]; return true; }
 }

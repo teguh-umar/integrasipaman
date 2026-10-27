@@ -79,8 +79,8 @@ check(!method_exists($M, 'getMenuContent'),
       'the old sector getMenuContent() is gone - nothing registers this class as a sector');
 
 $options = $entry['options'] ?? [];
-check(array_keys($options) === ['insights', 'report', 'loginfailures', 'session', 'setup'],
-      'read-only user gets insights / report / loginfailures / session / setup, in that order');
+check(array_keys($options) === ['insights', 'report', 'useraccess', 'loginfailures', 'session', 'setup'],
+      'read-only user gets insights / report / user access / loginfailures / session / setup, in that order');
 check(!isset($options['activity']),
       'Activity Log is not a menu option - front/export.php renders no GLPI chrome');
 check(!isset($options['correlation']),
@@ -107,8 +107,10 @@ foreach ($options as $key => $option) {
 // this same $options_rw.
 grant(READ | UPDATE, READ, READ);
 $options_rw = $M::entry()['options'];
-check(array_keys($options_rw) === ['insights', 'report', 'loginfailures', 'session', 'correlation', 'provisioning', 'setup'],
-      'full rights -> the seven pages: the old five, with login failures and Session after the report');
+check(array_keys($options_rw) === ['insights', 'report', 'useraccess', 'loginfailures', 'session', 'correlation', 'provisioning', 'setup'],
+      'full rights -> the eight pages: the old ones plus user access after the report');
+check($options_rw['useraccess']['page'] === $BASE . '/useraccess.php',
+      'the user access option points at the Phase 1 report');
 check($options_rw['correlation']['page'] === $BASE . '/correlation.php',
       'correlation points at its own controller');
 check($options_rw['report']['page'] === $BASE . '/pbi.php?tab=report',
@@ -138,8 +140,8 @@ check($M::entry() === null, 'no right at all -> entry hidden');
 grant(0, READ);
 $entry = $M::entry();
 check(is_array($entry), 'reports-only -> entry still returned');
-check(array_keys($entry['options']) === ['insights', 'report', 'loginfailures', 'session'],
-      'reports-only sees insights + report + Session, and not Setup / correlation / provisioning');
+check(array_keys($entry['options']) === ['insights', 'report', 'useraccess', 'loginfailures', 'session'],
+      'reports-only sees insights + report + user access + Session, and not Setup / correlation / provisioning');
 
 // --- config-only: settings without the audit detail -------------------------
 grant(READ, 0);
@@ -190,8 +192,15 @@ foreach (glob($front . '/*.php') as $file) {
 }
 // 17 since v4.5.0: front/backfilljoins.php, the one-shot session-join
 // back-fill, joined the 'setup' option.
-check(count($used) > 0 && array_sum(array_map('count', $used)) === 17,
-      'all 17 chrome-rendering front controllers were found');
+// 18 since v4.8.0: front/backfillsessionmeta.php, the one-shot that fills
+// `type` / `login_from_label` on sessions imported before then - the third
+// one-shot under 'setup', beside backfill.php and backfilljoins.php.
+// (front/sessionsharing.php is not counted: since v4.7.0 it is a bare
+// redirect to front/session.php and renders no chrome of its own.)
+// 19 since the Phase 1 user access page: front/useraccess.php, under its own
+// 'useraccess' option beside the audit report.
+check(count($used) > 0 && array_sum(array_map('count', $used)) === 19,
+      'all 19 chrome-rendering front controllers were found');
 foreach ($used as $key => $files) {
     if ($key === '$tab') {
         continue;

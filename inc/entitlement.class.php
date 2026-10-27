@@ -30,6 +30,18 @@ class PluginIntegrasipamanEntitlement
 {
     public const RULES_TABLE = 'glpi_plugin_jumpserver_permrules';
     public const MAP_TABLE   = 'glpi_plugin_jumpserver_assetperms';
+    public const GROUPS_TABLE  = 'glpi_plugin_jumpserver_usergroups';
+    public const MEMBERS_TABLE = 'glpi_plugin_jumpserver_groupmembers';
+
+    /**
+     * jms_id of the row that records "a complete membership pull ran".
+     * Empty, so it can never equal a real group id (the NONE_MARKER idea
+     * assetperms already uses).
+     */
+    public const GROUP_PULL_MARKER = '';
+
+    /** Members per page. The largest group on the probe instance has 5124. */
+    public const MEMBER_PAGE_SIZE = 500;
 
     /**
      * Twice the weekly cron interval. One missed run is not worth alarming
@@ -46,6 +58,8 @@ class PluginIntegrasipamanEntitlement
     private const RULES_PATH  = '/api/v1/perms/asset-permissions/?limit=500';
     private const USERREL_PATH = '/api/v1/perms/asset-permissions-users-relations/?limit=1000';
     private const GROUPREL_PATH = '/api/v1/perms/asset-permissions-user-groups-relations/?limit=500';
+    private const GROUPS_PATH   = '/api/v1/users/groups/?limit=500';
+    private const GROUP_USERS_PATH = '/api/v1/users/users/';
 
     /**
      * Group relation rows by the rule they belong to.
@@ -134,6 +148,170 @@ class PluginIntegrasipamanEntitlement
         }
 
         return $stored;
+    }
+
+    /**
+     * Pull every user group and its members.
+     *
+     * Group membership is the leg the rule cache cannot provide: rule JSON
+     * says "group G may reach this asset", not "who is in G". The probe
+     * proved exactly one working source, `GET /users/users/?group_id=<uuid>`,
+     * and proved it by the returned count matching the group list's
+     * users_amount. That count is therefore the cheap guard against a filter
+     * that silently comes back global - the failure mode this plugin has
+     * already paid for twice.
+     *
+     * NOTHING is written until every group has come back with a complete,
+     * count-matching member list. A partial snapshot replacing a complete one
+     * would render as a real answer, which is worse than the previous one
+     * being one pull old. On any failure the old rows stay and the report
+     * ages them.
+     *
+     * @param array{0:string,1:string,2:string,3:string} $credentials
+     * @return int memberships stored, or -1 when the previous snapshot was
+     *             left in place
+     */
+    public static function pullGroupMembers(array $credentials, ?CronTask $task = null): int
+    {
+        global $DB;
+
+        $say = static function (string $message) use ($task): void {
+            if ($task !== null) {
+                $task->log($message);
+            }
+        };
+
+        [$base_url, $access_key_id, $access_key_secret, $org_id] = $credentials;
+
+        // null is a transport/HTTP failure; [] is a real "this JumpServer has
+        // no user groups". Coercing the first to [] would wipe a good
+        // snapshot and render "nobody is in any group" as a fact.
+        $groups = PluginIntegrasipamanJmsApi::signedGet(self::GROUPS_PATH, ...$credentials);
+        if (!is_array($groups)) {
+            $say('The user-group list could not be read - the previous membership snapshot was left in place.');
+            return -1;
+        }
+
+        $now         = $_SESSION['glpi_currenttime'] ?? date('Y-m-d H:i:s');
+        $group_rows  = [];
+        $member_rows = [];
+
+        foreach ($groups as $group) {
+            if (!is_array($group)) {
+                $say('A user group was not an object - the previous membership snapshot was left in place.');
+                return -1;
+            }
+
+            $group_id = trim((string) ($group['id'] ?? ''));
+            if ($group_id === '') {
+                // Skipping it would silently drop every member behind it.
+                $say('A user group had no id - the previous membership snapshot was left in place.');
+                return -1;
+            }
+            if (!array_key_exists('users_amount', $group) || !is_numeric($group['users_amount'])) {
+                $say(sprintf('Group "%s" had no users_amount to check its member list against - the previous membership snapshot was left in place.', $group_id));
+                return -1;
+            }
+
+            $expected  = (int) $group['users_amount'];
+            $members   = [];
+            $malformed = false;
+
+            // Read 500 at a time rather than the default 100: the largest
+            // group is 5124, and signedGetEach() follows "next" and falls
+            // back to explicit offsets when a backend omits it.
+            $complete = PluginIntegrasipamanJmsApi::signedGetEach(
+                self::GROUP_USERS_PATH . '?group_id=' . urlencode($group_id),
+                $base_url,
+                $access_key_id,
+                $access_key_secret,
+                $org_id,
+                static function (array $page) use (&$members, &$malformed, $group_id, $now): void {
+                    foreach ($page as $user) {
+                        if (!is_array($user)) {
+                            $malformed = true;
+                            continue;
+                        }
+                        $user_id = trim((string) ($user['id'] ?? ''));
+                        if ($user_id === '') {
+                            $malformed = true;
+                            continue;
+                        }
+                        // Keyed by JumpServer user id: the same person twice
+                        // in one group is one membership, and the count must
+                        // be compared AFTER that collapse.
+                        $members[$user_id] = [
+                            'user_jms_id'       => $user_id,
+                            'user_login'        => (string) ($user['username'] ?? ''),
+                            'user_display'      => (string) ($user['name'] ?? ''),
+                            'user_groups_jms_id' => $group_id,
+                            'date_pulled'       => $now,
+                        ];
+                    }
+                },
+                self::MEMBER_PAGE_SIZE
+            );
+
+            if (!$complete || $malformed) {
+                $say(sprintf('The member list of group "%s" was incomplete - the previous membership snapshot was left in place.', $group_id));
+                return -1;
+            }
+
+            if (count($members) !== $expected) {
+                // The probe's proof: the RIGHT source returns exactly
+                // users_amount. A filter the server ignored returns the
+                // global user list, and this is where that is caught.
+                $say(sprintf(
+                    'Group "%s" reports %d member(s) but returned %d - the previous membership snapshot was left in place.',
+                    $group_id,
+                    $expected,
+                    count($members)
+                ));
+                return -1;
+            }
+
+            $group_rows[] = [
+                'jms_id'        => $group_id,
+                'name'          => (string) ($group['name'] ?? ''),
+                'users_amount'  => $expected,
+                'date_pulled'   => $now,
+            ];
+            foreach ($members as $member) {
+                $member_rows[] = $member;
+            }
+        }
+
+        // The marker is the only way an instance with zero groups can say
+        // "collected, and there are none" rather than "never collected".
+        $group_rows[] = [
+            'jms_id'       => self::GROUP_PULL_MARKER,
+            'name'         => '',
+            'users_amount' => 0,
+            'date_pulled'  => $now,
+        ];
+
+        $group_rows  = PluginIntegrasipamanConnection::stampRows($group_rows);
+        $member_rows = PluginIntegrasipamanConnection::stampRows($member_rows);
+
+        $DB->delete(self::GROUPS_TABLE, PluginIntegrasipamanConnection::ownRows());
+        $DB->delete(self::MEMBERS_TABLE, PluginIntegrasipamanConnection::ownRows());
+
+        foreach ($group_rows as $row) {
+            if (!$DB->insert(self::GROUPS_TABLE, $row)) {
+                trigger_error('Unable to store a JumpServer user group: ' . $DB->error(), E_USER_WARNING);
+                return -1;
+            }
+        }
+        foreach ($member_rows as $row) {
+            if (!$DB->insert(self::MEMBERS_TABLE, $row)) {
+                trigger_error('Unable to store a JumpServer group membership: ' . $DB->error(), E_USER_WARNING);
+                return -1;
+            }
+        }
+
+        $say(sprintf('%d group(s), %d membership row(s) collected.', count($groups), count($member_rows)));
+
+        return count($member_rows);
     }
 
     /** JumpServer returns some of these as lists of scalars or of objects. */
@@ -766,6 +944,15 @@ class PluginIntegrasipamanEntitlement
         $rules = self::pullRules($credentials);
         $task->log(sprintf('%d permission rule(s) cached.', $rules));
 
+        // The report's other leg. A failure here does not stop the rule
+        // pull or the per-Computer refresh: the previous snapshot stays and
+        // the report says how old it is. A partial snapshot is never
+        // written, so "old" is the only degradation possible.
+        $members = self::pullGroupMembers($credentials, $task);
+        if ($members < 0) {
+            $task->log('Group membership could not be collected; the previous snapshot was left in place.');
+        }
+
         // One host pull per run, shared by every Computer below. Resolving
         // per Computer would add BATCH_LIMIT calls for data that cannot
         // change within a single run.
@@ -806,6 +993,6 @@ class PluginIntegrasipamanEntitlement
             $task->log(sprintf('%d Computer(s) could not be refreshed; their previous entitlements were left in place.', $failed));
         }
 
-        return ($rules > 0 || $mapped > 0) ? 1 : 0;
+        return ($rules > 0 || $mapped > 0 || $members > 0) ? 1 : 0;
     }
 }

@@ -101,6 +101,16 @@ class PluginIntegrasipamanMenu extends CommonGLPI
                 'icon'  => 'ti ti-file-analytics',
                 'links' => ['search' => $report],
             ];
+            // Phase 1 of user access management: who can reach what, with the
+            // group that grants it. Same right as the audit report - it is a
+            // read-only view of the same permission cache.
+            $useraccess = self::BASE . '/useraccess.php';
+            $options['useraccess'] = [
+                'title' => __('User access', 'integrasipaman'),
+                'page'  => $useraccess,
+                'icon'  => 'ti ti-users',
+                'links' => ['search' => $useraccess],
+            ];
             // 4.3.0: why logins were refused, lockouts, accounts that keep failing.
             $options['loginfailures'] = [
                 'title' => __('Login failures', 'integrasipaman'),

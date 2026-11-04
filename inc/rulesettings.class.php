@@ -57,6 +57,8 @@ class PluginIntegrasipamanRuleSettings
             'jumpserver_production_ip_prefixes',
             'jumpserver_development_ip_prefixes',
             'jumpserver_command_categories',
+            'jumpserver_shared_session_note',
+            'jumpserver_direct_access_note',
         ],
         self::SECTION_CORRELATION => [
             'correlation_match_mode',

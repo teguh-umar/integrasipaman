@@ -209,11 +209,29 @@ class PluginIntegrasipamanRiskEval extends CommonGLPI
         return $risk_level >= 4 || $keyword_hit !== '';
     }
 
+    /** v4.13.0: the catatan of a HIGH row typed by someone who joined a shared session, unless configured otherwise. */
+    public const SHARED_NOTE_DEFAULT = 'Shared session';
+
     /**
-     * @param string $class production | development | '' (unclassified)
+     * v4.13.0: the catatan of every other HIGH row - a non-admin on
+     * production outside any share, which the access policy says cannot
+     * happen. Replaces "Butuh Tindak Lanjut" (owner, 2026-11-04).
+     */
+    public const DIRECT_NOTE_DEFAULT = 'Akses Langsung Non-Admin';
+
+    /**
+     * @param string $class  production | development | '' (unclassified)
+     * @param bool   $shared typed by someone joined to the session at the time (v4.13.0); see sharedFor()
      * @return array{0: string, 1: string} [priority, catatan]
      */
-    public static function priorityNote(bool $high_risk, string $class, bool $is_admin): array
+    public static function priorityNote(
+        bool $high_risk,
+        string $class,
+        bool $is_admin,
+        bool $shared = false,
+        string $shared_note = self::SHARED_NOTE_DEFAULT,
+        string $direct_note = self::DIRECT_NOTE_DEFAULT
+    ): array
     {
         if (!$high_risk) {
             return ['', ''];
@@ -233,7 +251,16 @@ class PluginIntegrasipamanRiskEval extends CommonGLPI
             return ['MEDIUM', 'Aktivitas Admin'];
         }
 
-        return ['HIGH', 'Butuh Tindak Lanjut'];
+        // v4.13.0, the owner's rule. A non-admin reaches production only by
+        // joining a session someone shared, so a HIGH row is either that
+        // (Shared session) or direct non-admin access, which the policy says
+        // cannot happen: a wrong grant, a user not known as admin, or a join
+        // not pulled yet. Both texts are configurable; the other branches
+        // keep their notes whether or not the session was shared.
+        $note    = trim($shared ? $shared_note : $direct_note);
+        $default = $shared ? self::SHARED_NOTE_DEFAULT : self::DIRECT_NOTE_DEFAULT;
+
+        return ['HIGH', mb_substr($note !== '' ? $note : $default, 0, 48)];
     }
 
     /**
@@ -255,6 +282,8 @@ class PluginIntegrasipamanRiskEval extends CommonGLPI
             'prefixes'     => self::parseList((string) ($cfg['jumpserver_production_ip_prefixes'] ?? '')),
             'dev_prefixes' => self::parseList((string) ($cfg['jumpserver_development_ip_prefixes'] ?? '')),
             'categories'   => self::parseCategories((string) ($cfg['jumpserver_command_categories'] ?? '')),
+            'shared_note'  => trim((string) ($cfg['jumpserver_shared_session_note'] ?? self::SHARED_NOTE_DEFAULT)),
+            'direct_note'  => trim((string) ($cfg['jumpserver_direct_access_note'] ?? self::DIRECT_NOTE_DEFAULT)),
             // Piece 3: GLPI-native resolution (asset -> class,
             // user -> admin). evaluateRow() reads these first and falls
             // back to admins/prefixes above only when a string has no map
@@ -324,7 +353,11 @@ class PluginIntegrasipamanRiskEval extends CommonGLPI
           . implode("\n", $rules['prefixes'])     . "\0"
           . implode("\n", $rules['dev_prefixes'] ?? []) . "\0"
           . 'gen' . $generation . "\0"
-          . $categories
+          . $categories . "\0"
+          // v4.13.0. Also why the upgrade re-evaluates history once: the
+          // hash every stored row carries no longer matches.
+          . 'shared:' . ($rules['shared_note'] ?? self::SHARED_NOTE_DEFAULT) . "\0"
+          . 'direct:' . ($rules['direct_note'] ?? self::DIRECT_NOTE_DEFAULT)
         );
     }
 
@@ -353,7 +386,11 @@ class PluginIntegrasipamanRiskEval extends CommonGLPI
         $is_admin = $rules['user_admin'][(string) ($cmd['jms_user'] ?? '')]
                     ?? in_array((string) ($cmd['jms_user'] ?? ''), $rules['admins'], true);
 
-        [$priority, $catatan] = self::priorityNote($high_risk, $class, $is_admin);
+        [$priority, $catatan] = self::priorityNote(
+            $high_risk, $class, $is_admin, !empty($cmd['shared']),
+            (string) ($rules['shared_note'] ?? self::SHARED_NOTE_DEFAULT),
+            (string) ($rules['direct_note'] ?? self::DIRECT_NOTE_DEFAULT)
+        );
 
         return [
             'commands_id'         => (int) ($cmd['id'] ?? 0),
@@ -387,6 +424,10 @@ class PluginIntegrasipamanRiskEval extends CommonGLPI
     {
         $deadline = microtime(true) + $max_seconds;
 
+        // A join is often pulled after the commands it overlaps were already
+        // evaluated; send those back through so they can turn "Shared session".
+        self::invalidateNewlyShared();
+
         // v4.0.0: one pass per connection. The verdict of a command depends
         // on the asset map and the user map, and those belong to the
         // connection the command came through: the same asset string on two
@@ -413,6 +454,77 @@ class PluginIntegrasipamanRiskEval extends CommonGLPI
     }
 
     /**
+     * Was this command typed by someone who joined a shared session (v4.13.0)?
+     * True when a join of its session was live at executed_at AND the typist
+     * is not the session's owner: JumpServer files each command under whoever
+     * typed it, and the owner, who had direct access, is not "shared" by
+     * their own session. With the owner unknown (no sessions row), the
+     * window alone decides.
+     *
+     * @param array<string, mixed> $row     command row: jms_user, executed_at.
+     * @param list<array<string, mixed>> $windows ShareOverlap windows of its session.
+     */
+    public static function sharedFor(array $row, array $windows): bool
+    {
+        if ($windows === []
+            || PluginIntegrasipamanShareOverlap::joinersAt($windows, (string) ($row['executed_at'] ?? '')) === []) {
+            return false;
+        }
+        $owner = (string) ($windows[0]['owner'] ?? '');
+
+        return $owner === '' || (string) ($row['jms_user'] ?? '') !== $owner;
+    }
+
+    /**
+     * Mark stale the HIGH eval rows of every session that gained a successful
+     * join since the last call (v4.13.0), so the next pass can give them the
+     * shared-session note. A watermark on the logs id keeps it to new joins:
+     * a HIGH row outside every join would otherwise be re-selected forever.
+     *
+     * @return int eval rows marked stale.
+     */
+    public static function invalidateNewlyShared(): int
+    {
+        global $DB;
+
+        $stored    = Config::getConfigurationValues(PluginIntegrasipamanConfig::CONFIG_CONTEXT);
+        $watermark = (int) ($stored['shared_note_join_watermark'] ?? 0);
+
+        $sessions = [];
+        $newest   = $watermark;
+        foreach ($DB->request([
+            'SELECT' => ['id', 'session_jms_id'],
+            'FROM'   => 'glpi_plugin_jumpserver_logs',
+            'WHERE'  => [
+                'event_type'     => 'session_join',
+                'status'         => 'success',
+                'id'             => ['>', $watermark],
+                'session_jms_id' => ['<>', ''],
+            ],
+        ]) as $row) {
+            $sessions[(string) $row['session_jms_id']] = true;
+            $newest = max($newest, (int) $row['id']);
+        }
+        if ($sessions === []) {
+            return 0;
+        }
+
+        $DB->update(self::EVAL_TABLE, ['rules_hash' => ''], [
+            'priority'    => 'HIGH',
+            'commands_id' => new QuerySubQuery([
+                'SELECT' => 'id',
+                'FROM'   => self::COMMANDS_TABLE,
+                'WHERE'  => ['session_jms_id' => array_keys($sessions)],
+            ]),
+        ]);
+        $marked = (int) $DB->affectedRows();
+
+        Config::setConfigurationValues(PluginIntegrasipamanConfig::CONFIG_CONTEXT, ['shared_note_join_watermark' => (string) $newest]);
+
+        return $marked;
+    }
+
+    /**
      * evaluateStale() for the current connection's commands - or, on an
      * instance with no connection at all, for every command.
      *
@@ -435,7 +547,7 @@ class PluginIntegrasipamanRiskEval extends CommonGLPI
             // (same chunk/loop structure). Do not switch pre-emptively -
             // post-deploy verification decides.
             $iterator = $DB->request([
-                'SELECT'     => ['c.id', 'c.risk_level', 'c.command', 'c.asset', 'c.jms_user', 'e.id AS eval_id'],
+                'SELECT'     => ['c.id', 'c.risk_level', 'c.command', 'c.asset', 'c.jms_user', 'c.session_jms_id', 'c.executed_at', 'e.id AS eval_id'],
                 'FROM'       => self::COMMANDS_TABLE . ' AS c',
                 'LEFT JOIN'  => [
                     self::EVAL_TABLE . ' AS e' => [
@@ -451,9 +563,15 @@ class PluginIntegrasipamanRiskEval extends CommonGLPI
                 'LIMIT'      => $chunk,
             ]);
 
+            $rows = iterator_to_array($iterator, false);
+            // v4.13.0: was a join of the session live when the command ran?
+            // One lookup per chunk; sessions nobody joined cost nothing.
+            $joins = PluginIntegrasipamanShareOverlap::joinsBySession(array_column($rows, 'session_jms_id'), false);
+
             $batch  = 0;
             $failed = 0;
-            foreach ($iterator as $row) {
+            foreach ($rows as $row) {
+                $row['shared'] = self::sharedFor($row, $joins[(string) ($row['session_jms_id'] ?? '')] ?? []);
                 // The LEFT JOIN already told us whether an eval row exists,
                 // so we go straight to INSERT or UPDATE. A rules-change
                 // re-eval makes every selected row an UPDATE - never

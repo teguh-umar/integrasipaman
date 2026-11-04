@@ -109,6 +109,84 @@ function plugin_integrasipaman_backfill_event_dates(string $table): bool
 }
 
 /**
+ * The session id inside a stored share or join record. A join record holds
+ * it bare (`"session": "..."`), a share link as `{"id": "..."}`; anything
+ * else, malformed JSON included, yields ''.
+ */
+function plugin_integrasipaman_session_id_of_message(string $message): string
+{
+    $data = json_decode($message, true);
+    $session = is_array($data) ? ($data['session'] ?? '') : '';
+    if (is_array($session)) {
+        $session = $session['id'] ?? '';
+    }
+
+    return is_scalar($session) ? mb_substr(trim((string) $session), 0, 64) : '';
+}
+
+/**
+ * Fill `session_jms_id` on the share and join rows imported before v4.12.0,
+ * from the JSON each row already carries. Walks by `id` in batches, like
+ * plugin_integrasipaman_backfill_event_dates(). Rows whose JSON names no
+ * session keep ''; they are simply never correlated.
+ *
+ * @param string $table The logs table.
+ * @return bool False only on a write failure, which aborts the migration.
+ */
+function plugin_integrasipaman_backfill_session_ids(string $table): bool
+{
+    global $DB;
+
+    $batch   = 500;
+    $last_id = 0;
+    $updated = 0;
+
+    while (true) {
+        $rows = [];
+        foreach ($DB->request([
+            'SELECT' => ['id', 'message'],
+            'FROM'   => $table,
+            'WHERE'  => [
+                'id'             => ['>', $last_id],
+                'event_type'     => ['session_share', 'session_join'],
+                'session_jms_id' => '',
+            ],
+            'ORDER'  => 'id ASC',
+            'LIMIT'  => $batch,
+        ]) as $row) {
+            $rows[] = $row;
+        }
+
+        if ($rows === []) {
+            break;
+        }
+
+        foreach ($rows as $row) {
+            $last_id = (int) $row['id'];
+            $id      = plugin_integrasipaman_session_id_of_message((string) ($row['message'] ?? ''));
+            if ($id === '') {
+                continue;
+            }
+            if (!$DB->update($table, ['session_jms_id' => $id], ['id' => $last_id])) {
+                trigger_error(
+                    sprintf('Unable to backfill session_jms_id on %s row %d: %s', $table, $last_id, $DB->error()),
+                    E_USER_WARNING
+                );
+                return false;
+            }
+            $updated++;
+        }
+    }
+
+    Toolbox::logInFile(
+        'integrasipaman',
+        sprintf("v4.12.0 migration: session_jms_id set on %d share/join rows in %s.\n", $updated, $table)
+    );
+
+    return true;
+}
+
+/**
  * Plugin install process.
  *
  * @return boolean
@@ -175,10 +253,12 @@ function plugin_integrasipaman_install(): bool
             `status` VARCHAR(20) NOT NULL DEFAULT '',
             `message` TEXT NULL,
             `source_id` VARCHAR(64) NULL DEFAULT NULL,
+            `session_jms_id` VARCHAR(64) NOT NULL DEFAULT '',
             `date_creation` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
             `date_import` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (`id`),
             KEY `source_id` (`source_id`),
+            KEY `session_jms_id` (`session_jms_id`),
             KEY `event_type_date` (`event_type`, `date_creation`)
         ) ENGINE=InnoDB DEFAULT CHARSET={$default_charset} COLLATE={$default_collation}";
 
@@ -789,6 +869,19 @@ function plugin_integrasipaman_install(): bool
             trigger_error(sprintf('Unable to create table %s: %s', $hosts_table, $DB->error()), E_USER_WARNING);
             return false;
         }
+    }
+
+    // --- v4.12.0: session id of share/join rows as a column ---------------
+    // So High-risk detail can find who joined the session a command ran in.
+    $logs_table = 'glpi_plugin_jumpserver_logs';
+    if (!$DB->fieldExists($logs_table, 'session_jms_id')) {
+        if (!$DB->doQuery("ALTER TABLE `$logs_table` ADD COLUMN `session_jms_id` VARCHAR(64) NOT NULL DEFAULT '', ADD KEY `session_jms_id` (`session_jms_id`)")) {
+            trigger_error("Unable to add $logs_table.session_jms_id: " . $DB->error(), E_USER_WARNING);
+            return false;
+        }
+    }
+    if (!plugin_integrasipaman_backfill_session_ids($logs_table)) {
+        return false;
     }
 
     // --- v4.11.0: User / Group access sub-tabs ----------------------------

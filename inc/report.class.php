@@ -326,7 +326,7 @@ class PluginIntegrasipamanReport
     private const HIGHRISK_COLUMNS = [
         'Timestamp', 'User', 'UserStatus', 'Asset', 'AssetIP', 'Classification',
         'Account', 'Command', 'RiskLevel', 'RiskLabel', 'Priority', 'Kategori',
-        'Catatan', 'Session', 'RemoteAddr',
+        'Catatan', 'Session', 'RemoteAddr', 'JoinedBy', 'SharedBy',
     ];
 
     /**
@@ -337,7 +337,7 @@ class PluginIntegrasipamanReport
      * eventually disagree, and a pager computed from a different filter than
      * the rows is the kind of wrong that looks like a rounding error.
      */
-    private static function highriskWhere(array $period, string $q = '', string $catatan = '', string $priority = '', string $kategori = ''): array
+    private static function highriskWhere(array $period, string $q = '', string $catatan = '', string $priority = '', string $kategori = '', bool $shared = false, string $session = ''): array
     {
         $where = self::periodWhere($period) + ['e.is_high_risk' => 1];
 
@@ -388,11 +388,27 @@ class PluginIntegrasipamanReport
             $where['e.risk_category'] = $kategori;
         }
 
+        // v4.12.0. An exact session (the drill-down from Session Sharing)
+        // wins over "shared only": it already is one shared session.
+        if ($session !== '') {
+            $where['c.session_jms_id'] = $session;
+        } elseif ($shared) {
+            $where['c.session_jms_id'] = new QuerySubQuery([
+                'SELECT' => 'session_jms_id',
+                'FROM'   => 'glpi_plugin_jumpserver_logs',
+                'WHERE'  => [
+                    'event_type'     => 'session_join',
+                    'status'         => 'success',
+                    'session_jms_id' => ['<>', ''],
+                ] + PluginIntegrasipamanConnection::viewer(),
+            ]);
+        }
+
         return $where;
     }
 
     /** Row count for EVALUASI_HIGHRISK over the period (pager + page clamping). */
-    private static function highriskTotal(array $period, string $q = '', string $catatan = '', string $priority = '', string $kategori = ''): int
+    private static function highriskTotal(array $period, string $q = '', string $catatan = '', string $priority = '', string $kategori = '', bool $shared = false, string $session = ''): int
     {
         global $DB;
 
@@ -400,7 +416,7 @@ class PluginIntegrasipamanReport
             'COUNT'      => 'cnt',
             'FROM'       => self::COMMANDS_TABLE . ' AS c',
             'INNER JOIN' => [self::EVAL_TABLE . ' AS e' => ['ON' => ['e' => 'commands_id', 'c' => 'id']]],
-            'WHERE'      => self::highriskWhere($period, $q, $catatan, $priority, $kategori),
+            'WHERE'      => self::highriskWhere($period, $q, $catatan, $priority, $kategori, $shared, $session),
         ])->current() ?: [];
 
         return (int) ($row['cnt'] ?? 0);
@@ -433,7 +449,9 @@ class PluginIntegrasipamanReport
                 (string) ($opts['q'] ?? ''),
                 (string) ($opts['catatan'] ?? ''),
                 (string) ($opts['priority'] ?? ''),
-                (string) ($opts['kategori'] ?? '')
+                (string) ($opts['kategori'] ?? ''),
+                !empty($opts['shared']),
+                (string) ($opts['session'] ?? '')
             ),
             'ORDER'      => $sortCol . ' ' . $dir,
         ];
@@ -463,6 +481,8 @@ class PluginIntegrasipamanReport
                 (string) $r['catatan'],
                 (string) $r['session_jms_id'],
                 (string) $r['remote_addr'],
+                '',   // JoinedBy, filled per batch by withJoiners()
+                '',   // SharedBy, likewise
             ];
         };
 
@@ -475,26 +495,64 @@ class PluginIntegrasipamanReport
                     (string) ($opts['q'] ?? ''),
                     (string) ($opts['catatan'] ?? ''),
                     (string) ($opts['priority'] ?? ''),
-                    (string) ($opts['kategori'] ?? '')
+                    (string) ($opts['kategori'] ?? ''),
+                    !empty($opts['shared']),
+                    (string) ($opts['session'] ?? '')
                 );
 
             $page  = max(1, (int) ($opts['page'] ?? 1));
             $spec  = $base + ['START' => ($page - 1) * self::HIGHRISK_PAGE_SIZE, 'LIMIT' => self::HIGHRISK_PAGE_SIZE];
-            $rows  = [];
+            $raw   = [];
             foreach ($DB->request($spec) as $r) {
-                $rows[] = $mapRow($r);
+                $raw[] = $r;
             }
 
-            return ['columns' => self::HIGHRISK_COLUMNS, 'rows' => $rows, 'total' => $total];
+            return ['columns' => self::HIGHRISK_COLUMNS, 'rows' => self::withJoiners($raw, $mapRow), 'total' => $total];
         }
 
+        // Buffered so the joins are looked up once per 500 rows, not per row.
         $gen = (static function () use ($DB, $base, $mapRow) {
+            $buf = [];
             foreach ($DB->request($base) as $r) {
-                yield $mapRow($r);
+                $buf[] = $r;
+                if (count($buf) === 500) {
+                    yield from self::withJoiners($buf, $mapRow);
+                    $buf = [];
+                }
+            }
+            if ($buf !== []) {
+                yield from self::withJoiners($buf, $mapRow);
             }
         })();
 
         return ['columns' => self::HIGHRISK_COLUMNS, 'rows' => $gen, 'total' => null];
+    }
+
+    /**
+     * Map high-risk rows and fill JoinedBy and SharedBy (v4.12.0). JoinedBy:
+     * who was joined to the session when the command ran. SharedBy: the
+     * session's owner, who shared it. JumpServer files each command under
+     * whoever typed it, so User + SharedBy reads "typed by X in Y's session".
+     *
+     * @param list<array<string, mixed>> $raw
+     * @return list<list<string>>
+     */
+    private static function withJoiners(array $raw, callable $mapRow): array
+    {
+        $joins = PluginIntegrasipamanShareOverlap::joinsBySession(array_column($raw, 'session_jms_id'));
+        $last  = count(self::HIGHRISK_COLUMNS) - 1;   // SharedBy; JoinedBy is $last - 1
+        $out   = [];
+        foreach ($raw as $r) {
+            $row     = $mapRow($r);
+            $windows = $joins[(string) ($r['session_jms_id'] ?? '')] ?? [];
+            if ($windows !== []) {
+                $row[$last - 1] = implode(', ', PluginIntegrasipamanShareOverlap::joinersAt($windows, (string) $r['executed_at']));
+                $row[$last]     = (string) ($windows[0]['owner'] ?? '');
+            }
+            $out[] = $row;
+        }
+
+        return $out;
     }
 
     private const DETAIL_COLUMNS = [
@@ -651,6 +709,14 @@ class PluginIntegrasipamanReport
         $hr_kategori = trim((string) ($get['hr_kategori'] ?? ''));
         if ($hr_kategori !== '') {
             $params['hr_kategori'] = $hr_kategori;
+        }
+
+        $hr_session = trim((string) ($get['hr_session'] ?? ''));
+        if ($hr_session !== '') {
+            $params['hr_session'] = $hr_session;
+        }
+        if (!empty($get['hr_shared'])) {
+            $params['hr_shared'] = '1';
         }
 
         // Which tab is open must survive every reload this page can cause.
@@ -1056,7 +1122,7 @@ class PluginIntegrasipamanReport
         // spent two tasks closing, arriving through the search box instead of
         // the export. hr_catatan/hr_priority are a v3.7.0 defect; this branch
         // adds hr_kategori to the same broken form, so all three go together.
-        foreach (['hr_catatan', 'hr_priority', 'hr_kategori'] as $filter) {
+        foreach (['hr_catatan', 'hr_priority', 'hr_kategori', 'hr_session'] as $filter) {
             $value = trim((string) ($get[$filter] ?? ''));
             if ($value !== '') {
                 echo '<input type="hidden" name="' . htmlescape($filter) . '" value="' . htmlescape($value) . '">';
@@ -1067,6 +1133,10 @@ class PluginIntegrasipamanReport
         echo '<input type="search" name="hr_q" class="form-control form-control-sm" style="width:16rem"'
             . ' value="' . htmlescape($q) . '"'
             . ' placeholder="' . htmlescape(__('Search user, asset, IP, priority', 'integrasipaman')) . '">';
+        echo '<label class="form-check form-check-inline mb-0 small" title="'
+            . htmlescape(__('Every command of a session someone joined, before and after the join too. User is who typed it; SharedBy is the session owner.', 'integrasipaman')) . '">'
+            . '<input type="checkbox" class="form-check-input" name="hr_shared" value="1"' . (!empty($get['hr_shared']) ? ' checked' : '') . '>'
+            . '<span class="form-check-label">' . htmlescape(__('Sessions that were shared', 'integrasipaman')) . '</span></label>';
         echo '<button type="submit" class="btn btn-sm btn-primary">' . htmlescape(__('Search', 'integrasipaman')) . '</button>';
         if ($q !== '') {
             echo '<a class="btn btn-sm btn-outline-secondary" href="'
@@ -1113,6 +1183,24 @@ class PluginIntegrasipamanReport
                 $kategori
             )) . ' <a href="' . htmlescape(self::tabUrl($get, $pq, $base, [
                 'hr_kategori' => null, 'hr_page' => null,
+                'rtab' => 'evaluasi_highrisk',
+            ], $anchor)) . '">' . htmlescape(__('Clear', 'integrasipaman')) . '</a></div>';
+        }
+
+        // Review fix: the shared-only filter and the session drill-down both
+        // keep a whole session, so say which of its rows a joiner saw.
+        $session = trim((string) ($get['hr_session'] ?? ''));
+        if ($session !== '' || !empty($get['hr_shared'])) {
+            echo '<div class="form-hint px-3 pb-2">' . htmlescape(
+                __('JoinedBy is filled only for commands run while someone was joined; the rest of the session ran before or after.', 'integrasipaman')
+            ) . '</div>';
+        }
+        if ($session !== '') {
+            echo '<div class="form-hint px-3 pb-2">' . htmlescape(sprintf(
+                __('Filtered to session %s, from Session Sharing.', 'integrasipaman'),
+                $session
+            )) . ' <a href="' . htmlescape(self::tabUrl($get, $pq, $base, [
+                'hr_session' => null, 'hr_page' => null,
                 'rtab' => 'evaluasi_highrisk',
             ], $anchor)) . '">' . htmlescape(__('Clear', 'integrasipaman')) . '</a></div>';
         }
@@ -1283,7 +1371,9 @@ HTML;
         $catatan  = trim((string) ($get['hr_catatan'] ?? ''));
         $priority = trim((string) ($get['hr_priority'] ?? ''));
         $kategori = trim((string) ($get['hr_kategori'] ?? ''));
-        $total    = self::highriskTotal($period, $q, $catatan, $priority, $kategori);
+        $shared   = !empty($get['hr_shared']);
+        $session  = trim((string) ($get['hr_session'] ?? ''));
+        $total    = self::highriskTotal($period, $q, $catatan, $priority, $kategori, $shared, $session);
         $pages    = max(1, (int) ceil($total / self::HIGHRISK_PAGE_SIZE));
         $page     = min($page, $pages);
 
@@ -1291,6 +1381,7 @@ HTML;
             'paginate' => true, 'page' => $page, 'sort' => $sort, 'dir' => $dir,
             'total'    => $total, 'q' => $q, 'catatan' => $catatan,
             'priority' => $priority, 'kategori' => $kategori,
+            'shared'   => $shared, 'session' => $session,
         ]);
 
         $assetCol = (int) array_search('Asset', self::HIGHRISK_COLUMNS, true);
@@ -1318,7 +1409,9 @@ HTML;
             . ($q !== '' ? '&q=' . rawurlencode($q) : '')
             . ($catatan !== '' ? '&catatan=' . rawurlencode($catatan) : '')
             . ($priority !== '' ? '&priority=' . rawurlencode($priority) : '')
-            . ($kategori !== '' ? '&kategori=' . rawurlencode($kategori) : '');
+            . ($kategori !== '' ? '&kategori=' . rawurlencode($kategori) : '')
+            . ($shared ? '&shared=1' : '')
+            . ($session !== '' ? '&session=' . rawurlencode($session) : '');
 
         self::renderHighriskToolbar($get, $pq, $base, $anchor, $q, $catatan, $total, $export_pq, $kategori);
 

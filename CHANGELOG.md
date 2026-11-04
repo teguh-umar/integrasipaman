@@ -11,6 +11,61 @@ Author: ICT.
 This changelog starts at 4.11.0. For earlier releases, see the release's deploy checklist in the source repository
 (`docs/vX.Y.Z-deploy-checklist.md`) and its git tag.
 
+## [4.13.0] — 2026-11-04
+
+A HIGH row (non-admin, production, high-risk) now says how the user reached production. Under the access policy, a
+non-admin reaches production only by joining a session someone else shared.
+
+### Changed
+- **Catatan of a HIGH row** is one of two notes, and both texts can be set per connection in Command risk evaluation.
+  "Butuh Tindak Lanjut" is no longer produced.
+  - **`Shared session`**: the command was typed by someone joined to *another user's* shared session, while the
+    join was live.
+  - **`Akses Langsung Non-Admin`**: every other HIGH row, including the session owner's own commands. This should
+    not happen under the access policy. A row means a wrong grant, a user not known as an admin, or a join not
+    pulled yet.
+- Other notes do not change.
+
+### Added
+- New joins send the HIGH commands of their session back through evaluation, so a join pulled after its commands
+  still takes effect.
+
+### Notes
+- Both notes are part of the rules hash. The upgrade re-evaluates every stored command once, in chunks, through the
+  `evaluate_commands` cron.
+- The evaluator reads every join, whoever triggers it. A manual re-evaluation by a sub-entity user cannot drop the
+  note.
+
+## [4.12.0] — 2026-11-04
+
+Non-admins reach production only by joining a session someone else shared. JumpServer files each command under
+whoever **typed** it (VM-checked: in Alice Example's session, the commands of Bob Example read
+`Bob Example(bob.example)`), so the command row never said that the session was someone else's. This release
+lays the session-join records over the commands to show both who was joined and who shared the session.
+
+### Added
+- **High-risk detail: `JoinedBy` column** (the last column, so saved hidden-column choices keep their place).
+  It names who was joined to the shared session when each command ran. It is also included in the CSV, Excel and
+  Print exports.
+- **High-risk detail: `SharedBy` column** (after `JoinedBy`). It shows the owner of a shared session, who gave
+  the share. It is empty for sessions nobody joined.
+- **High-risk detail: "Sessions that were shared" filter.** It keeps every command of a session someone joined,
+  including commands run before and after the join.
+- **Session Sharing > Who joined: `High-risk` column.** It shows the number of high-risk commands run in the
+  session while the join lasted. The number links to High-risk detail, filtered to that session. The Who joined
+  CSV gains a `High-risk commands` column.
+
+### Changed
+- **Schema:** `glpi_plugin_jumpserver_logs.session_jms_id` (indexed) is added and backfilled from the stored
+  JSON during the upgrade. The cron fills it for new share and join rows.
+
+### Notes
+- Refused joins never count as present.
+- A join with no `date_left` ends at the session's `date_end`. Production had no finished join without a
+  `date_left` (checked 2026-11-04).
+- Times are compared on one clock: join times carry their own offset and are converted into GLPI's timezone,
+  so the JumpServer server offset does not matter.
+
 ## [4.11.1] — 2026-11-03
 
 A patch release on 4.11.0, with no schema change. It was verified on the production VM before release.

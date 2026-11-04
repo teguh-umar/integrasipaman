@@ -705,7 +705,8 @@ $GLOBALS['CLI'] = false;
 // every session-driven read is restricted, and a count by the same clause as its rows
 $src = static fn (string $rel) => (string) file_get_contents("$root/$rel");
 $expect = [
-    'inc/report.class.php'        => 3,   // the one period clause, the month list, the asset links
+    'inc/report.class.php'        => 4,   // the one period clause, the month list, the asset links, the shared-only subquery
+    'inc/shareoverlap.class.php'  => 3,   // joinsBySession's one $viewer (join rows + session ends, skippable for the evaluator); high-risk commands + session ends
     'inc/dashboard.class.php'     => 3,   // count, grouped count, rows
     'inc/accesshistory.class.php' => 5,
     'inc/useraccess.class.php'    => 4,   // the sessions and commands; NOT the name lookup, see the class

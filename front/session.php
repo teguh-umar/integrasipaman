@@ -64,6 +64,8 @@ $tab = (($_GET['tab'] ?? 'log') === 'sharing') ? 'sharing' : 'log';
 // loads nothing for it. Only the Session Sharing tab still reads here.
 $shares = $tab === 'sharing' ? $S::find($filters)      : [];
 $joins  = $tab === 'sharing' ? $S::findJoins($filters) : [];
+// v4.12.0: high-risk commands that ran in the session while each join lasted.
+$hr_counts = $joins !== [] ? PluginIntegrasipamanShareOverlap::highriskCounts($joins) : [];
 
 $status_label = [
     $S::STATUS_ACTIVE   => __('Active', 'integrasipaman'),
@@ -87,6 +89,7 @@ if ($tab === 'sharing' && ($_GET['format'] ?? '') === 'csv' && ($_GET['what'] ??
             $join['session_id'],
             $join['succeeded'] ? __('Joined', 'integrasipaman') : __('Refused', 'integrasipaman'),
             $join['reason'],
+            (string) ($hr_counts[$join['id']] ?? 0),
         ];
     }
 
@@ -103,6 +106,7 @@ if ($tab === 'sharing' && ($_GET['format'] ?? '') === 'csv' && ($_GET['what'] ??
             __('Session ID', 'integrasipaman'),
             __('Result', 'integrasipaman'),
             __('Reason', 'integrasipaman'),
+            __('High-risk commands', 'integrasipaman'),
         ],
         $rows
     );
@@ -272,13 +276,14 @@ echo '<thead><tr>';
 foreach ([
     __('Joined at', 'integrasipaman'), __('Who joined', 'integrasipaman'), __('From', 'integrasipaman'),
     __('Session', 'integrasipaman'), __('Left at', 'integrasipaman'), __('Result', 'integrasipaman'),
+    __('High-risk', 'integrasipaman'),
 ] as $heading) {
     echo '<th>' . htmlescape($heading) . '</th>';
 }
 echo '</tr></thead><tbody>';
 
 if ($joins === []) {
-    echo '<tr><td colspan="6">' . htmlescape(__('Nobody joined a shared session in this selection.', 'integrasipaman')) . '</td></tr>';
+    echo '<tr><td colspan="7">' . htmlescape(__('Nobody joined a shared session in this selection.', 'integrasipaman')) . '</td></tr>';
 }
 
 foreach ($joins as $join) {
@@ -317,6 +322,24 @@ foreach ($joins as $join) {
         echo '<td><span class="badge bg-red-lt"'
             . ($join['reason'] !== '' ? ' title="' . htmlescape($join['reason']) . '"' : '')
             . '>' . htmlescape(__('Refused', 'integrasipaman')) . '</span></td>';
+    }
+
+    // Links to High-risk detail narrowed to this session over the join's
+    // days. The commands there are filed under the session owner; the
+    // JoinedBy column names who was present.
+    $hr = (int) ($hr_counts[$join['id']] ?? 0);
+    if ($hr > 0) {
+        $day_from = substr($join['joined_at'], 0, 10);
+        $day_to   = $join['left_at'] !== '' ? substr($join['left_at'], 0, 10) : date('Y-m-d');
+        $hr_url   = Plugin::getWebDir('integrasipaman') . '/front/pbi.php?' . http_build_query([
+            'tab' => 'report', 'rtab' => 'evaluasi_highrisk', 'hr_session' => $join['session_id'],
+            'from' => $day_from, 'to' => max($day_from, $day_to),
+        ]) . '#integrasipaman-report-tabs';
+        echo '<td><a class="badge bg-orange-lt" href="' . htmlescape($hr_url) . '" title="'
+            . htmlescape(__('High-risk commands in this session while the join lasted. The link opens the whole session on those days; the rows with JoinedBy filled are the ones counted here; User says who typed each one.', 'integrasipaman'))
+            . '">' . $hr . '</a></td>';
+    } else {
+        echo '<td class="text-muted">0</td>';
     }
 
     echo '</tr>';

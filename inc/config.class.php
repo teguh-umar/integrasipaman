@@ -141,6 +141,10 @@ class PluginIntegrasipamanConfig extends CommonDBTM
         // that were compiled into the plugin up to v3.7.0, so an upgrade
         // re-derives the category every row already had.
         'jumpserver_command_categories'      => self::SEED_COMMAND_CATEGORIES,
+        // v4.13.0: catatan of a HIGH row run inside a shared session.
+        'jumpserver_shared_session_note'     => 'Shared session',
+        // v4.13.0: catatan of every other HIGH row (was "Butuh Tindak Lanjut").
+        'jumpserver_direct_access_note'      => 'Akses Langsung Non-Admin',
         // Asset & user correlation (inc/correlation.class.php + the
         // resolver run at the top of the evaluate_commands cron - Piece 3).
         // With both selections empty the resolver routes everything
@@ -728,6 +732,8 @@ class PluginIntegrasipamanConfig extends CommonDBTM
             'jumpserver_production_ip_prefixes' => [__('Fallback: production IP prefixes', 'integrasipaman'), __('Used only when a command\'s asset resolves to no GLPI IPNetwork or Computer. An asset whose IP starts with one of these is "production". e.g. 10.0.0.', 'integrasipaman'), 3],
             'jumpserver_development_ip_prefixes' => [__('Fallback: development IP prefixes', 'integrasipaman'), __('An asset whose IP starts with one of these is "development". An asset matching neither list is left unclassified and scores MEDIUM until someone classifies it on the correlation form.', 'integrasipaman'), 3],
             'jumpserver_command_categories'     => [__('Command categories', 'integrasipaman'), __('One per line, "Name: word1, word2". Line order decides which category wins when two match. A name over 32 characters is stored shortened to 32 characters. Keep the trailing space in "su " - without it the keyword also matches sudo and sudoers. A command matching nothing reads as Belum Dikategorikan. Categories group commands only; they never change a risk level.', 'integrasipaman'), 6],
+            'jumpserver_shared_session_note'    => [__('Catatan for a shared session', 'integrasipaman'), __('A HIGH row (non-admin, production, high-risk) typed by someone joined to another user\'s shared session. At most 48 characters; empty means "Shared session".', 'integrasipaman'), 1],
+            'jumpserver_direct_access_note'     => [__('Catatan for direct non-admin access', 'integrasipaman'), __('Every other HIGH row: a non-admin on production outside any share - a wrong grant, a user not known as admin, or a join not pulled yet. At most 48 characters; empty means "Akses Langsung Non-Admin".', 'integrasipaman'), 1],
         ] as $key => [$label, $hint, $rows]) {
             // The category list is one wide line per category; the four
             // short lists pair up two per row.

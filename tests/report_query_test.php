@@ -42,6 +42,11 @@ class FakeDB {
     }
 }
 
+class QuerySubQuery { public function __construct(public array $q) {} }
+$_SESSION['glpiactiveentities'] = [0 => 0];
+require __DIR__ . '/../inc/connection.class.php';
+require __DIR__ . '/../inc/sessionsharing.class.php';
+require __DIR__ . '/../inc/shareoverlap.class.php';
 require __DIR__ . '/../inc/report.class.php';
 
 $fails = 0;
@@ -806,6 +811,77 @@ $hrForm2 = hrSearchForm($html10);
 check($hrForm2 !== '' && !str_contains($hrForm2, 'name="hr_kategori"'),
       'with no filter active the form emits no empty hr_kategori input, which '
     . 'would read as a filter on the empty category name');
+
+// --- v4.12.0: who joined the shared session ------------------------------
+// JumpServer files a shared session's commands under the OWNER; JoinedBy
+// names who was joined when the command ran. Appended LAST so the column
+// picker's saved hidden-column indexes keep pointing at the same columns.
+$cols = (new ReflectionClassConstant($R, 'HIGHRISK_COLUMNS'))->getValue();
+check($cols[15] === 'JoinedBy' && $cols[13] === 'Session' && $cols[14] === 'RemoteAddr',
+    'JoinedBy is appended after RemoteAddr; earlier column indexes are unchanged');
+
+$shareRow = highriskFixtureRow('Aktivitas Admin');
+$shareRow['session_jms_id'] = 'S-shared';
+$shareRow['executed_at']    = '2026-02-10 14:20:00';
+$lonely = highriskFixtureRow('Aktivitas Admin');
+$joinLog = [
+    'session_jms_id' => 'S-shared', 'status' => 'success',
+    'message' => json_encode(['joiner' => ['name' => 'Bob Example'], 'session' => 'S-shared', 'is_success' => true,
+        'date_joined' => '2026/02/10 14:15:14 +0000', 'date_left' => '2026/02/10 14:57:19 +0000']),
+];
+$db = new FakeDB(); $GLOBALS['DB'] = $db;
+$db->canned = [[$shareRow, $lonely], [$joinLog], []];
+$res  = $R::report('evaluasi_highrisk', $period, ['paginate' => true, 'page' => 1, 'total' => 2]);
+$last = 15;
+check(($res['rows'][0][$last] ?? null) === 'Bob Example', 'a command inside a join names the joiner');
+check(($res['rows'][1][$last] ?? null) === '', 'a command in an unshared session has an empty JoinedBy');
+check(count($res['rows'][0]) === count($res['columns']), 'row width matches the columns');
+
+// rc2: JumpServer files a command under whoever TYPED it (VM-checked
+// 2026-11-04: session owner Alice, commands by Bob Example), so the
+// missing fact is who SHARED the session: its owner, in SharedBy.
+$cols = (new ReflectionClassConstant($R, 'HIGHRISK_COLUMNS'))->getValue();
+check(array_slice($cols, -2) === ['JoinedBy', 'SharedBy'], 'SharedBy is appended after JoinedBy');
+$db = new FakeDB(); $GLOBALS['DB'] = $db;
+$db->canned = [[$shareRow, $lonely], [$joinLog], [['jms_id' => 'S-shared', 'date_end' => null, 'jms_user' => 'Alice Example(alice.example)']]];
+$res = $R::report('evaluasi_highrisk', $period, ['paginate' => true, 'page' => 1, 'total' => 2]);
+check(($res['rows'][0][count($cols) - 1] ?? null) === 'Alice Example(alice.example)', 'a command in a shared session names the session owner as SharedBy');
+check(($res['rows'][1][count($cols) - 1] ?? null) === '', 'an unshared session has an empty SharedBy');
+check(($res['rows'][0][count($cols) - 2] ?? null) === 'Bob Example', 'JoinedBy still names the joiner');
+
+$db = new FakeDB(); $GLOBALS['DB'] = $db;
+$db->canned = [[$shareRow], [$joinLog], []];
+$res = $R::report('evaluasi_highrisk', $period, ['total' => 1]);
+$exported = iterator_to_array($res['rows'], false);
+check(($exported[0][$last] ?? null) === 'Bob Example', 'the export generator fills JoinedBy too');
+
+$db = new FakeDB(); $GLOBALS['DB'] = $db; $db->canned = [[]];
+$R::report('evaluasi_highrisk', $period, ['paginate' => true, 'page' => 1, 'total' => 0, 'shared' => true]);
+$sub = $db->seen[0]['WHERE']['c.session_jms_id'] ?? null;
+check($sub instanceof QuerySubQuery
+    && ($sub->q['WHERE']['event_type'] ?? null) === 'session_join'
+    && ($sub->q['WHERE']['status'] ?? null) === 'success',
+    'shared=true restricts to sessions with a successful join (subquery on logs)');
+
+$db = new FakeDB(); $GLOBALS['DB'] = $db; $db->canned = [[]];
+$R::report('evaluasi_highrisk', $period, ['paginate' => true, 'page' => 1, 'total' => 0, 'session' => 'S-shared', 'catatan' => 'Aktivitas Admin']);
+$w = $db->seen[0]['WHERE'];
+check(($w['c.session_jms_id'] ?? null) === 'S-shared' && ($w['e.catatan'] ?? null) === 'Aktivitas Admin',
+    'session= is an exact filter, ANDed with the others');
+
+ob_start();
+$R::renderReportTab(['month' => '2026-02', 'rtab' => 'evaluasi_highrisk', 'hr_session' => 'S-shared', 'hr_shared' => '1']);
+$html = ob_get_clean();
+check(str_contains($html, 'name="hr_session" value="S-shared"') && str_contains($html, 'name="hr_shared"'),
+    'hr_session and hr_shared survive the search form');
+check(str_contains($html, 'session=S-shared') && str_contains($html, 'shared=1'),
+    'hr_session and hr_shared ride along to the export');
+// Review fix: the filter keeps the WHOLE session, so the label must not
+// promise only the commands run while someone was joined.
+check(str_contains($html, 'Sessions that were shared') && !str_contains($html, 'Shared sessions only'),
+    'the checkbox says it keeps sessions that were shared, not only joined time');
+check(str_contains($html, 'JoinedBy is filled only for commands run while someone was joined'),
+    'the hint says which rows fall inside a join');
 
 
 exit($fails > 0 ? 1 : 0);

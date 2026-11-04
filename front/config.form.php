@@ -79,6 +79,9 @@ if (isset($_POST['update'])) {
     // last line, so a category ending "..., su " silently becomes "su" and
     // matches sudo, sudoers, issue and resume.
     $jumpserver_command_categories = trim($_POST['jumpserver_command_categories'] ?? '', "\r\n");
+    // v4.13.0: one line, at most what catatan holds.
+    $jumpserver_shared_session_note = mb_substr(trim((string) ($_POST['jumpserver_shared_session_note'] ?? '')), 0, 48);
+    $jumpserver_direct_access_note  = mb_substr(trim((string) ($_POST['jumpserver_direct_access_note'] ?? '')), 0, 48);
 
     $correlation_match_mode = in_array(($_POST['correlation_match_mode'] ?? ''), PluginIntegrasipamanConfig::MATCH_MODES, true)
         ? $_POST['correlation_match_mode']
@@ -141,6 +144,8 @@ if (isset($_POST['update'])) {
         'jumpserver_production_ip_prefixes' => $jumpserver_production_ip_prefixes,
         'jumpserver_development_ip_prefixes' => $jumpserver_development_ip_prefixes,
         'jumpserver_command_categories'     => $jumpserver_command_categories,
+        'jumpserver_shared_session_note'    => $jumpserver_shared_session_note,
+        'jumpserver_direct_access_note'     => $jumpserver_direct_access_note,
         'correlation_match_mode'            => $correlation_match_mode,
         'correlation_production_ipnetworks' => $correlation_production_ipnetworks,
         'correlation_production_addressings' => $correlation_production_addressings,
@@ -166,6 +171,14 @@ if (isset($_POST['update'])) {
     // unreachable.
     if (!array_key_exists('jumpserver_command_categories', $_POST)) {
         unset($rule_values['jumpserver_command_categories']);
+    }
+    // Same reasoning for the v4.13.0 note: a tab rendered before it existed
+    // must not blank it.
+    if (!array_key_exists('jumpserver_shared_session_note', $_POST)) {
+        unset($rule_values['jumpserver_shared_session_note']);
+    }
+    if (!array_key_exists('jumpserver_direct_access_note', $_POST)) {
+        unset($rule_values['jumpserver_direct_access_note']);
     }
 
     // v4.4.0: the form for the defaults every connection inherits. There is no

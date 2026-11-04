@@ -95,7 +95,7 @@ check($e4['user_is_admin'] === 1, 'unmapped user falls back to the admin list');
 // --- v3.6.0: three-valued scoring ---------------------------------------
 $R = 'PluginIntegrasipamanRiskEval';
 
-check($R::priorityNote(true, 'production', false) === ['HIGH', 'Butuh Tindak Lanjut'],
+check($R::priorityNote(true, 'production', false) === ['HIGH', 'Akses Langsung Non-Admin'],   // 4.13.0: was Butuh Tindak Lanjut
       'production + non-admin is HIGH');
 check($R::priorityNote(true, 'production', true) === ['MEDIUM', 'Aktivitas Admin'],
       'production + admin is MEDIUM');

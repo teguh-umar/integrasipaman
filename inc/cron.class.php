@@ -677,6 +677,8 @@ class PluginIntegrasipamanCron extends CommonDBTM
             'status'     => !empty($entry['is_active']) ? 'success' : 'expired',
             'message'    => (string) json_encode($entry),
             'source_id'  => mb_substr((string) ($entry['id'] ?? ''), 0, 64),
+            // v4.12.0: {"id": ...} on a share link.
+            'session_jms_id' => is_scalar($entry['session']['id'] ?? null) ? mb_substr(trim((string) $entry['session']['id']), 0, 64) : '',
         ], $entry['date_created'] ?? null);
     }
 
@@ -796,6 +798,8 @@ class PluginIntegrasipamanCron extends CommonDBTM
             'status'     => !empty($entry['is_success']) ? 'success' : 'failed',
             'message'    => (string) json_encode($entry),
             'source_id'  => mb_substr((string) ($entry['id'] ?? ''), 0, 64),
+            // v4.12.0: bare id on a join record.
+            'session_jms_id' => is_scalar($entry['session'] ?? null) ? mb_substr(trim((string) $entry['session']), 0, 64) : '',
         ], $entry['date_joined'] ?? null);
     }
 }

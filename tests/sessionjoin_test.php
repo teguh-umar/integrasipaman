@@ -104,6 +104,30 @@ check(!array_key_exists('date_creation', $mapped_undated),
     'an undated entry leaves date_creation to the column default rather than guessing');
 check($mapped_undated['event_type'] === 'session_join', 'and it is still imported, not dropped');
 
+// v4.12.0: the session id as a column, so commands can be joined to it in SQL.
+check(($row['session_jms_id'] ?? null) === 'aaaaaaaa-1111-2222-3333-444444444444',
+    'session_jms_id carries the bare session id of a join');
+check(($refused['session_jms_id'] ?? null) === 'aaaaaaaa-1111-2222-3333-444444444444',
+    'a refused join keeps its session id too');
+$no_session = $entry;
+unset($no_session['session']);
+check((JoinMapperHost::mapSessionJoinEntry($no_session)['session_jms_id'] ?? null) === '',
+    'a join without a session maps to an empty id, not a crash');
+
+// The v4.12.0 backfill reads the id back out of the stored JSON.
+$hook = file_get_contents(__DIR__ . '/../hook.php');
+preg_match('/function plugin_integrasipaman_session_id_of_message\(.*?\n\}/s', $hook, $hm);
+check(isset($hm[0]), 'hook.php defines plugin_integrasipaman_session_id_of_message()');
+if (isset($hm[0])) {
+    eval($hm[0]);
+    check(plugin_integrasipaman_session_id_of_message(json_encode($entry)) === 'aaaaaaaa-1111-2222-3333-444444444444',
+        'backfill: a join record yields its bare session id');
+    check(plugin_integrasipaman_session_id_of_message('{"session":{"id":"X"}}') === 'X',
+        'backfill: a share record yields the id inside its session object');
+    check(plugin_integrasipaman_session_id_of_message('not json') === '',
+        'backfill: malformed JSON yields an empty id');
+}
+
 // --- what the page makes of the row --------------------------------------
 require __DIR__ . '/../inc/sessionsharing.class.php';
 $S = 'PluginIntegrasipamanSessionSharing';

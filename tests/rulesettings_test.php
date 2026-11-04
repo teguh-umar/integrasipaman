@@ -98,7 +98,7 @@ $C = 'PluginIntegrasipamanConnection';
 $seed = PluginIntegrasipamanConfig::CONFIG_DEFAULTS;
 
 // --- what is per connection --------------------------------------------------------
-check(count($S::keys()) === 15 && count(array_unique($S::keys())) === 15, 'fifteen settings, none listed twice');
+check(count($S::keys()) === 17 && count(array_unique($S::keys())) === 17, 'seventeen settings (4.13.0: shared-session and direct-access notes), none listed twice');
 foreach ($S::keys() as $key) {
     check(array_key_exists($key, $seed), "$key has a shipped default, so a connection with nothing stored still has a value");
 }

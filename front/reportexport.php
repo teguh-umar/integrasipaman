@@ -85,6 +85,9 @@ if ($report === 'evaluasi_highrisk') {
         // wider set than the screen - the defect v3.7.0 fixed for the
         // catatan, recurring in this same code path.
         'kategori' => (string) ($_GET['kategori'] ?? ''),
+        // v4.12.0: Session Sharing drill-down and "shared sessions only".
+        'shared'   => !empty($_GET['shared']),
+        'session'  => (string) ($_GET['session'] ?? ''),
     ];
 }
 

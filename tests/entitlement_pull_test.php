@@ -61,13 +61,30 @@ class FakeDB
     /** FROM table (alias stripped) => rows. Resolution now reads three
      *  tables, so positional canned results would silently mis-feed them. */
     public array $tables = [];
+    /** Tables whose reads honour WHERE (equality, IN, NOT, nested AND). Opt-in:
+     *  the older cases rely on FROM-only answers. */
+    public array $filtered = [];
+    private static function matches(array $row, array $where): bool
+    {
+        foreach ($where as $k => $v) {
+            if ($k === 'NOT') { if (self::matches($row, $v)) { return false; } continue; }
+            if (is_int($k)) { if (!self::matches($row, $v)) { return false; } continue; }
+            $have = $row[$k] ?? null;
+            if (is_array($v) ? !in_array($have, $v) : $have != $v) { return false; }
+        }
+        return true;
+    }
     public function quoteName($n) { return "`$n`"; }
     public function request($q)
     {
         $this->seen[] = $q;
         $from = trim(explode(' AS ', (string) ($q['FROM'] ?? ''))[0]);
         if ($this->tables !== []) {
-            return new ArrayIterator($this->tables[$from] ?? []);
+            $rows = $this->tables[$from] ?? [];
+            if (in_array($from, $this->filtered, true)) {
+                $rows = array_values(array_filter($rows, fn($r) => self::matches($r, (array) ($q['WHERE'] ?? []))));
+            }
+            return new ArrayIterator($rows);
         }
         return new ArrayIterator(array_shift($this->canned) ?? []);
     }
@@ -812,6 +829,56 @@ $task = new CronTask();
 $E::cronEntitlement_pull($task);
 check(count(preg_grep('/^Access report rebuilt: \d+ user row\(s\), \d+ group row\(s\); peak memory \d+\.\d MB\.$/', $task->logs)) === 1,
       'the rebuild line records the peak memory in MB (' . implode(' | ', preg_grep('/rebuilt/', $task->logs)) . ')');
+
+// --- a recreated Computer's old rows no longer double its access ------------
+// A Computer deleted from GLPI and recreated gets a new id; refreshComputer()
+// only ever cleared its own id, so the old id kept grants for the same asset.
+$cleanup = static function (array $perms, array $computers, array $api, int $id = 50, bool $connected = true): FakeDB {
+    global $E;
+    $db = new FakeDB(); $GLOBALS['DB'] = $db;
+    $db->filtered = ['glpi_plugin_jumpserver_assetperms', 'glpi_computers'];
+    $db->tables = [
+        'glpi_plugin_jumpserver_assetperms' => $perms,
+        'glpi_computers'                    => $computers,
+    ];
+    $GLOBALS['API_RESPONSES'] = $api;
+    if (!$connected) { PluginIntegrasipamanConnection::setCurrent(null); }
+    $E::refreshComputer($id, ['https://x', 'k', 's', 'o'], [], ['A1']);
+    if (!$connected) { PluginIntegrasipamanConnection::setCurrent([
+        'id' => 4, 'entities_id' => 1, 'is_recursive' => 1,
+        'url' => 'https://x', 'access_key_id' => 'k', 'access_key_secret' => 's', 'org_id' => 'o',
+    ]); }
+    return $db;
+};
+$perm = static fn(int $c, string $a, string $r = 'R1') => [
+    'computers_id' => $c, 'jms_asset_id' => $a, 'permrules_jms_id' => $r, PluginIntegrasipamanConnection::FK => 4,
+];
+$mapDeletes = static fn(FakeDB $db) => array_values(array_filter($db->seen,
+    static fn($q) => ($q['DELETE'] ?? '') === 'glpi_plugin_jumpserver_assetperms' && ($q['w']['computers_id'] ?? null) !== 50));
+$ok = ['asset_id=A1' => [['id' => 'R1']]];
+
+$db = $cleanup([$perm(9, 'A1')], [['id' => 50]], $ok);
+$d = $mapDeletes($db);
+check(count($d) === 1 && ($d[0]['w']['computers_id'] ?? null) === [9] && ($d[0]['w']['jms_asset_id'] ?? null) === ['A1']
+      && ($d[0]['w'][PluginIntegrasipamanConnection::FK] ?? null) === 4,
+      'a missing Computer holding the same asset has its rows deleted, scoped to the connection');
+
+$db = $cleanup([$perm(8, 'A7')], [['id' => 50]], $ok);
+check($mapDeletes($db) === [], 'a true orphan (asset no refresh covers) is kept');
+
+$db = $cleanup([$perm(51, 'A1')], [['id' => 50], ['id' => 51]], $ok);
+check($mapDeletes($db) === [], 'a live Computer sharing the asset is not touched');
+
+$db = $cleanup([$perm(9, 'A1')], [['id' => 50]], ['asset_id=A1' => null]);
+check($mapDeletes($db) === [] && array_filter($db->seen, static fn($q) => ($q['FROM'] ?? '') === 'glpi_plugin_jumpserver_assetperms') === [],
+      'a failed asset call (-1) does no cleanup read and no cleanup delete');
+
+$db = $cleanup([$perm(9, 'A1')], [['id' => 50]], $ok, 50, false);
+check($mapDeletes($db) === [], 'with no current connection there is no cleanup');
+
+$db = $cleanup([$perm(9, 'A1'), $perm(9, 'A9', 'R2')], [['id' => 50]], $ok);
+$d = $mapDeletes($db);
+check(count($d) === 1 && ($d[0]['w']['jms_asset_id'] ?? null) === ['A1'], 'only the orphan\'s rows for the covered asset are deleted, A9 stays');
 
 echo $fails === 0 ? "\nALL PASS\n" : "\n$fails FAILURE(S)\n";
 exit($fails === 0 ? 0 : 1);

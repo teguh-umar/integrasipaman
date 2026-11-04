@@ -163,6 +163,8 @@ check(!str_contains($setup, "'integrasipaman' => [PluginIntegrasipamanMenu::clas
       'the old own sector is no longer registered');
 check(preg_match("/'author'\s*=>\s*'ICT',/", $setup) === 1 && !str_contains($setup, "'PGN ICT'"),
       "author is 'ICT' (suite decision 2026-10-03)");
+check(str_contains($setup, "'page' => 'front/pgnsuite.settings.php?section=integrasipaman',"),
+      'the Setup > Plugins wrench opens the integrasipaman section of the suite settings (4.11.1)');
 
 // --- every front controller is in the shared sector ------------------------
 // 3rd arg = Menu::SECTOR, 4th = the plugin key, 5th = an option key; and the

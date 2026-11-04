@@ -23,7 +23,7 @@
 // row in glpi_plugins. Confirmed by comparison against a working
 // reference plugin on the target instance, which has no such guard.
 
-define('PLUGIN_INTEGRASIPAMAN_VERSION', '4.11.0');
+define('PLUGIN_INTEGRASIPAMAN_VERSION', '4.11.1');
 
 // Minimum GLPI version, inclusive
 define('PLUGIN_INTEGRASIPAMAN_MIN_GLPI', '10.0.0');
@@ -206,14 +206,16 @@ function plugin_init_integrasipaman(): void
 
 /**
  * Define the plugin's configuration options, notably the page used as the
- * "Configure" link for this plugin under Setup > Plugins.
+ * "Configure" link for this plugin under Setup > Plugins. Since 4.11.1 the
+ * wrench opens this plugin's section of the shared suite settings page, like
+ * every other suite plugin; front/config.form.php still saves that form.
  *
  * @return array<string, string>
  */
 function plugin_integrasipaman_options(): array
 {
     return [
-        'page' => 'front/config.form.php',
+        'page' => 'front/pgnsuite.settings.php?section=integrasipaman',
     ];
 }
 

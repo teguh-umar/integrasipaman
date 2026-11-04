@@ -5,7 +5,7 @@ A [GLPI](https://glpi-project.org/) 11 plugin that connects GLPI to one or more
 REST API, pulls audit data on a schedule, and adds risk evaluation, correlation to GLPI assets
 and users, access reporting and human-gated asset provisioning on top of it.
 
-Current version: **4.10.0**. A user manual in Indonesian, written for 3.4.2, ships as
+Current version: **4.11.1**. Changes are listed in `CHANGELOG.md` (from 4.11.0). A user manual in Indonesian, written for 3.4.2, ships as
 `docs/MANUAL.id.md` in the published repository; it predates everything in 4.x.
 
 > The seed values for the risk-evaluation config — the admin user list and the production IP
@@ -39,6 +39,9 @@ Current version: **4.10.0**. A user manual in Indonesian, written for 3.4.2, shi
   been collected. An asset GLPI no longer holds is labelled as such with its id (4.10.0) rather
   than dropped: the rule was never revoked, so the access is still real, and it is named from the
   bastion's own host list because that is the only place the name still exists.
+  From 4.11.0 the page has three sub-tabs: **User** (one row per person: groups, assets, role,
+  accounts), **Group** (one row per group, member list on click) and **Asset** (the grant-path
+  table above). 4.11.1 stops a deleted-and-recreated Computer from counting the same access twice.
 - **Asset provisioning (PAMAN)** — Computers eligible for the bastion wait in a queue; sending,
   re-sending and removing are manual actions behind their own right, and removal needs an
   approved ticket. Nothing is pushed on save.
@@ -97,7 +100,8 @@ Profiles that hold core `config` UPDATE are restored to full rights on every
    php bin/console cache:clear
    ```
 3. Log out and in again — the sidebar is built at login.
-4. Open **Setup → ICT Tools** (the suite label is editable) and add a connection in the
+4. Open **Setup → ICT Tools** (the suite label is editable; the plugin's *Configure* icon in
+   Setup → Plugins opens the same section from 4.11.1) and add a connection in the
    plugin's section. From 4.10.0 the shared suite settings are their own entry in the Setup
    sidebar; before that they were a tab on Setup → General.
 5. Make sure GLPI's automatic actions run, ideally from a system cron calling `front/cron.php`.

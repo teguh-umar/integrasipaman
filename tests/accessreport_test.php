@@ -401,6 +401,11 @@ check(preg_match('/max\(1, min\(\$pages, \(int\) \(\$_GET\[\'page\'\] \?\? 1\)\)
 check(preg_match('/\$pages\s*=\s*max\(1, \(int\) ceil\(/', $page_src) === 1,
       'there is always at least one page, so an empty result still renders its table');
 
+// The group list moved to the Group sub-tab in 4.11.0; the copy under the
+// asset table repeated it and was dropped in 4.11.1.
+check(!str_contains($page_src, "foreach (\$report['groups'] as") &&!str_contains($page_src, "'JumpServer count'"),
+      'the asset table no longer renders its own group list');
+
 // --- an asset GLPI no longer holds (v4.10.0) ------------------------------
 // 166 of 2650 cached map rows on the live instance point at a computers_id
 // that is not in glpi_computers any more. The rule was never revoked, so the

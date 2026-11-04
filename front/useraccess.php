@@ -324,53 +324,8 @@ echo '</tbody></table></div>';
 // who wants the next page.
 $render_pager();
 
-// --- the group list ---------------------------------------------------------
-echo '<h3 class="h4">' . htmlescape(__('Groups', 'integrasipaman')) . '</h3>';
-echo '<div class="table-responsive"><table class="table table-sm table-striped card-table"><thead><tr>';
-foreach ([
-    __('Group', 'integrasipaman'),
-    __('Members', 'integrasipaman'),
-    __('JumpServer count', 'integrasipaman'),
-    __('Rules', 'integrasipaman'),
-    __('Assets', 'integrasipaman'),
-    __('Collected', 'integrasipaman'),
-] as $heading) {
-    echo '<th>' . htmlescape($heading) . '</th>';
-}
-echo '</tr></thead><tbody>';
-
-if ($report['groups'] === []) {
-    echo '<tr><td colspan="6" class="text-muted">'
-        . htmlescape($report['membership']['collected']
-            ? __('No group has been collected yet.', 'integrasipaman')
-            : __('Group membership has never been collected.', 'integrasipaman'))
-        . '</td></tr>';
-}
-
-foreach ($report['groups'] as $group) {
-    echo '<tr><td>' . htmlescape($group['name'] !== '' ? (string) $group['name'] : (string) $group['jms_id']) . '</td>';
-
-    echo '<td>' . (int) $group['members'];
-    if ($group['mismatch']) {
-        echo ' <span class="badge bg-yellow-lt">' . htmlescape(__('differs', 'integrasipaman')) . '</span>';
-    }
-    echo '</td>';
-
-    echo '<td>' . (int) $group['users_amount'] . '</td>'
-        . '<td>' . (int) $group['rules'] . '</td>'
-        . '<td>' . (int) $group['assets'] . '</td>'
-        . '<td>' . htmlescape((string) ($group['date_pulled'] ?? ''));
-    if ($group['stale']) {
-        echo ' <span class="badge bg-yellow-lt">' . htmlescape(__('stale', 'integrasipaman')) . '</span>';
-    }
-    echo '</td></tr>';
-}
-echo '</tbody></table></div>';
-
-echo '<p class="text-muted small mt-3 mb-0">' . htmlescape(__(
-    'Members are counted from the last complete membership pull. JumpServer count is the figure the group list reported at that time; a difference is shown rather than resolved silently.',
-    'integrasipaman'
-)) . '</p>';
+// The group list lives on the Group sub-tab (front/accessgroup.php) since
+// 4.11.0; a second copy under this table only repeated it.
 
 echo '</div></div>';
 

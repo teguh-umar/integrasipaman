@@ -856,7 +856,69 @@ class PluginIntegrasipamanEntitlement
             ]);
         }
 
+        self::dropRecreatedDuplicates($computers_id, $asset_ids);
+
         return count($rule_ids);
+    }
+
+    /**
+     * A Computer deleted from GLPI and recreated gets a new id, and its
+     * refresh writes fresh rows for the same JumpServer assets while the old
+     * id's rows stay behind, so the Asset tab counted that access twice.
+     * Remove the old id's rows for the assets this refresh covered, but only
+     * when the old id no longer exists in glpi_computers. A Computer in the
+     * trash still exists, and two live Computers may share an asset through
+     * correlation - deleting theirs would make them flap on every run. A true
+     * orphan with no successor keeps its rows, and so does an orphan's rows
+     * for any asset not covered here.
+     *
+     * @param list<string> $asset_ids
+     */
+    private static function dropRecreatedDuplicates(int $computers_id, array $asset_ids): void
+    {
+        global $DB;
+
+        // No current connection: ownRows() is [] and the search or delete
+        // would reach other connections' rows.
+        $own = PluginIntegrasipamanConnection::ownRows();
+        if ($own === [] || $asset_ids === []) {
+            return;
+        }
+
+        $others = [];
+        foreach ($DB->request([
+            'SELECT'   => ['computers_id'],
+            'DISTINCT' => true,
+            'FROM'     => self::MAP_TABLE,
+            'WHERE'    => $own + [
+                'jms_asset_id' => $asset_ids,
+                ['NOT' => ['computers_id' => $computers_id]],
+                ['NOT' => ['jms_asset_id' => '']],
+            ],
+        ]) as $row) {
+            $others[(int) $row['computers_id']] = true;
+        }
+        if ($others === []) {
+            return;
+        }
+
+        $alive = [];
+        foreach ($DB->request([
+            'SELECT' => ['id'],
+            'FROM'   => 'glpi_computers',
+            'WHERE'  => ['id' => array_keys($others)],
+        ]) as $row) {
+            $alive[(int) $row['id']] = true;
+        }
+        $missing = array_values(array_diff(array_keys($others), array_keys($alive)));
+        if ($missing === []) {
+            return;
+        }
+
+        $DB->delete(self::MAP_TABLE, $own + [
+            'computers_id' => $missing,
+            'jms_asset_id' => $asset_ids,
+        ]);
     }
 
     /**

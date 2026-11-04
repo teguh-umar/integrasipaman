@@ -818,5 +818,22 @@ foreach (['assetmap', 'usermap', 'nodemap', 'platformmap', 'provisioning'] as $c
     check(!str_contains($src("inc/$class.class.php"), 'function isEntityAssign'),
           "$class: nothing stops core from treating it as entity-owning (Search::show() and can() now check the entity)");
 }
+
+// --- final review, fix 5 ------------------------------------------------------
+// The report rows carry the connection's entity like the group rows: moving a
+// connection's entity restamps them, or a sub-entity user would keep seeing
+// (or stop seeing) the rows of the entity the connection left.
+foreach (['accessusers', 'accessgroups'] as $t) {
+    $name = "glpi_plugin_jumpserver_$t";
+    check(array_key_exists($name, $C::STAMPED_TABLES) && $C::STAMPED_TABLES[$name] === null,
+          "$t report rows are restamped with their connection's entity, not matched to a Computer");
+}
+// install stops on a failed 4.11 ALTER, like every other schema block. Read as
+// text: install needs a live database.
+foreach (['$permrules_table.protocols', '$hosts_table.protocols', '$usergroups_table.comment'] as $col) {
+    check(preg_match('/Unable to add ' . preg_quote($col, '/') . ': " \\. \\$DB->error\\(\\), E_USER_WARNING\\);\\s*return false;/', $hook) === 1,
+          "a failed ALTER adding $col makes install return false");
+}
+
 echo $fails === 0 ? "\nALL PASS\n" : "\n$fails FAILURE(S)\n";
 exit($fails === 0 ? 0 : 1);

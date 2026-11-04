@@ -791,6 +791,159 @@ function plugin_integrasipaman_install(): bool
         }
     }
 
+    // --- v4.11.0: User / Group access sub-tabs ----------------------------
+    // Per-column ALTERs, each guarded, so a half-finished run is completed
+    // by the next one.
+    if (!$DB->fieldExists($permrules_table, 'protocols')
+        && !$DB->doQuery("ALTER TABLE `$permrules_table` ADD COLUMN `protocols` VARCHAR(255) NOT NULL DEFAULT ''")) {
+        trigger_error("Unable to add $permrules_table.protocols: " . $DB->error(), E_USER_WARNING);
+        return false;
+    }
+    if (!$DB->fieldExists($hosts_table, 'protocols')
+        && !$DB->doQuery("ALTER TABLE `$hosts_table` ADD COLUMN `protocols` VARCHAR(255) NOT NULL DEFAULT ''")) {
+        trigger_error("Unable to add $hosts_table.protocols: " . $DB->error(), E_USER_WARNING);
+        return false;
+    }
+    if (!$DB->fieldExists($usergroups_table, 'comment')
+        && !$DB->doQuery("ALTER TABLE `$usergroups_table` ADD COLUMN `comment` VARCHAR(255) NOT NULL DEFAULT ''")) {
+        trigger_error("Unable to add $usergroups_table.comment: " . $DB->error(), E_USER_WARNING);
+        return false;
+    }
+
+    // `plugin_jumpserver_connections_id` is the connection FK spelled
+    // literally (connection.class.php is not loaded here).
+    $jmsusers_table = 'glpi_plugin_jumpserver_jmsusers';
+    if (!$DB->tableExists($jmsusers_table)) {
+        $default_charset   = DBConnection::getDefaultCharset();
+        $default_collation = DBConnection::getDefaultCollation();
+        $default_key_sign  = DBConnection::getDefaultPrimaryKeySignOption();
+
+        $query = "CREATE TABLE `$jmsusers_table` (
+            `id` INT {$default_key_sign} NOT NULL AUTO_INCREMENT,
+            `jms_id` VARCHAR(64) NOT NULL DEFAULT '',
+            `username` VARCHAR(191) NOT NULL DEFAULT '',
+            `name` VARCHAR(191) NOT NULL DEFAULT '',
+            `system_role` VARCHAR(191) NOT NULL DEFAULT '',
+            `date_pulled` TIMESTAMP NULL DEFAULT NULL,
+            `plugin_jumpserver_connections_id` INT {$default_key_sign} NOT NULL DEFAULT 0,
+            `entities_id` INT {$default_key_sign} NOT NULL DEFAULT 0,
+            PRIMARY KEY (`id`),
+            UNIQUE KEY `connection_user` (`plugin_jumpserver_connections_id`, `jms_id`),
+            KEY `entities_id` (`entities_id`)
+        ) ENGINE=InnoDB DEFAULT CHARSET={$default_charset} COLLATE={$default_collation}";
+
+        if (!$DB->doQuery($query)) {
+            trigger_error(sprintf('Unable to create table %s: %s', $jmsusers_table, $DB->error()), E_USER_WARNING);
+            return false;
+        }
+    }
+
+    $ruleassets_table = 'glpi_plugin_jumpserver_ruleassets';
+    if (!$DB->tableExists($ruleassets_table)) {
+        $default_charset   = DBConnection::getDefaultCharset();
+        $default_collation = DBConnection::getDefaultCollation();
+        $default_key_sign  = DBConnection::getDefaultPrimaryKeySignOption();
+
+        $query = "CREATE TABLE `$ruleassets_table` (
+            `id` INT {$default_key_sign} NOT NULL AUTO_INCREMENT,
+            `permrules_jms_id` VARCHAR(64) NOT NULL DEFAULT '',
+            `jms_asset_id` VARCHAR(64) NOT NULL DEFAULT '',
+            `date_refreshed` TIMESTAMP NULL DEFAULT NULL,
+            `plugin_jumpserver_connections_id` INT {$default_key_sign} NOT NULL DEFAULT 0,
+            `entities_id` INT {$default_key_sign} NOT NULL DEFAULT 0,
+            PRIMARY KEY (`id`),
+            UNIQUE KEY `connection_asset_rule` (`plugin_jumpserver_connections_id`, `jms_asset_id`, `permrules_jms_id`),
+            KEY `permrules_jms_id` (`permrules_jms_id`),
+            KEY `entities_id` (`entities_id`)
+        ) ENGINE=InnoDB DEFAULT CHARSET={$default_charset} COLLATE={$default_collation}";
+
+        if (!$DB->doQuery($query)) {
+            trigger_error(sprintf('Unable to create table %s: %s', $ruleassets_table, $DB->error()), E_USER_WARNING);
+            return false;
+        }
+    }
+
+    $accessusers_table = 'glpi_plugin_jumpserver_accessusers';
+    if (!$DB->tableExists($accessusers_table)) {
+        $default_charset   = DBConnection::getDefaultCharset();
+        $default_collation = DBConnection::getDefaultCollation();
+        $default_key_sign  = DBConnection::getDefaultPrimaryKeySignOption();
+
+        $query = "CREATE TABLE `$accessusers_table` (
+            `id` INT {$default_key_sign} NOT NULL AUTO_INCREMENT,
+            `user_jms_id` VARCHAR(64) NOT NULL DEFAULT '',
+            `name` VARCHAR(191) NOT NULL DEFAULT '',
+            `username` VARCHAR(191) NOT NULL DEFAULT '',
+            `system_role` VARCHAR(191) NOT NULL DEFAULT '',
+            `group_names` TEXT,
+            `asset_names` TEXT,
+            `account_names` TEXT,
+            `assets_detail` MEDIUMTEXT,
+            `assets_count` INT UNSIGNED NOT NULL DEFAULT 0,
+            `date_built` TIMESTAMP NULL DEFAULT NULL,
+            `plugin_jumpserver_connections_id` INT {$default_key_sign} NOT NULL DEFAULT 0,
+            `entities_id` INT {$default_key_sign} NOT NULL DEFAULT 0,
+            PRIMARY KEY (`id`),
+            UNIQUE KEY `connection_user` (`plugin_jumpserver_connections_id`, `user_jms_id`),
+            KEY `name` (`name`),
+            KEY `entities_id` (`entities_id`)
+        ) ENGINE=InnoDB DEFAULT CHARSET={$default_charset} COLLATE={$default_collation}";
+
+        if (!$DB->doQuery($query)) {
+            trigger_error(sprintf('Unable to create table %s: %s', $accessusers_table, $DB->error()), E_USER_WARNING);
+            return false;
+        }
+    }
+
+    $accessgroups_table = 'glpi_plugin_jumpserver_accessgroups';
+    if (!$DB->tableExists($accessgroups_table)) {
+        $default_charset   = DBConnection::getDefaultCharset();
+        $default_collation = DBConnection::getDefaultCollation();
+        $default_key_sign  = DBConnection::getDefaultPrimaryKeySignOption();
+
+        $query = "CREATE TABLE `$accessgroups_table` (
+            `id` INT {$default_key_sign} NOT NULL AUTO_INCREMENT,
+            `jms_id` VARCHAR(64) NOT NULL DEFAULT '',
+            `name` VARCHAR(191) NOT NULL DEFAULT '',
+            `comment` VARCHAR(255) NOT NULL DEFAULT '',
+            `users_amount` INT UNSIGNED NOT NULL DEFAULT 0,
+            `rules_count` INT UNSIGNED NOT NULL DEFAULT 0,
+            `assets_count` INT UNSIGNED NOT NULL DEFAULT 0,
+            `date_built` TIMESTAMP NULL DEFAULT NULL,
+            `plugin_jumpserver_connections_id` INT {$default_key_sign} NOT NULL DEFAULT 0,
+            `entities_id` INT {$default_key_sign} NOT NULL DEFAULT 0,
+            PRIMARY KEY (`id`),
+            UNIQUE KEY `connection_group` (`plugin_jumpserver_connections_id`, `jms_id`),
+            KEY `entities_id` (`entities_id`)
+        ) ENGINE=InnoDB DEFAULT CHARSET={$default_charset} COLLATE={$default_collation}";
+
+        if (!$DB->doQuery($query)) {
+            trigger_error(sprintf('Unable to create table %s: %s', $accessgroups_table, $DB->error()), E_USER_WARNING);
+            return false;
+        }
+    }
+
+    // Default columns, written only while the itemtype has no users_id = 0
+    // row at all, so a choice the admin has changed is never overwritten by
+    // a later upgrade.
+    foreach ([
+        'PluginIntegrasipamanAccessUser'  => [3, 4, 5],
+        'PluginIntegrasipamanAccessGroup' => [2, 3],
+    ] as $dp_itemtype => $dp_nums) {
+        if (countElementsInTable('glpi_displaypreferences', ['itemtype' => $dp_itemtype, 'users_id' => 0]) > 0) {
+            continue;
+        }
+        foreach ($dp_nums as $dp_rank => $dp_num) {
+            $DB->insert('glpi_displaypreferences', [
+                'itemtype'  => $dp_itemtype,
+                'num'       => $dp_num,
+                'rank'      => $dp_rank + 1,
+                'users_id'  => 0,
+                'interface' => 'central',
+            ]);
+        }
+    }
+
     // --- schema-convention migration (v3.2.0) -----------------------------
     // v3.0.1 created three columns that GLPI 11 counts as violations on the
     // Setup page: two `*_id` columns without UNSIGNED, and one DATETIME.
@@ -1456,7 +1609,7 @@ function plugin_integrasipaman_uninstall(): bool
     // The event & derived tables (glpi_plugin_jumpserver_logs,
     // glpi_plugin_jumpserver_commands, glpi_plugin_jumpserver_sessions,
     // glpi_plugin_jumpserver_command_eval, glpi_plugin_jumpserver_assetmap,
-    // glpi_plugin_jumpserver_usermap) are
+    // glpi_plugin_jumpserver_usermap, and the v4.11.0 jmsusers, ruleassets, accessusers, accessgroups) are
     // deliberately NOT dropped on uninstall. Their rows are pulled from
     // JumpServer's audit API and JumpServer rotates its own audit history
     // out over time, so a drop-and-reinstall would permanently lose every

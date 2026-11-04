@@ -18,6 +18,14 @@ Session::checkLoginUser();
 include_once(__DIR__ . '/../inc/profile.class.php');
 Session::checkRight(PluginIntegrasipamanProfile::RIGHT_REPORT, READ);
 
+// v4.11.0: this page is the Asset sub-tab. Without an asset-table parameter
+// (or ?format=csv) the request is for User or Group, which live elsewhere.
+include_once(__DIR__ . '/../inc/accessindex.class.php');
+$ua_tab = PluginIntegrasipamanAccessIndex::tabFor($_GET);
+if ($ua_tab !== 'asset') {
+    Html::redirect(Plugin::getWebDir('integrasipaman') . '/front/' . ($ua_tab === 'group' ? 'accessgroup.php' : 'accessuser.php'));
+}
+
 include_once(__DIR__ . '/../inc/accessreport.class.php');
 include_once(__DIR__ . '/../inc/exporter.class.php');
 
@@ -86,9 +94,10 @@ Html::header(
     'useraccess'
 );
 \GlpiPlugin\Pgnsuite\Menu::renderSubNav('integrasipaman', 'useraccess');
+PluginIntegrasipamanAccessIndex::renderTabs('asset');
 
 $self      = Plugin::getWebDir('integrasipaman') . '/front/useraccess.php';
-$csv_query = http_build_query(array_filter($filters, static fn ($v): bool => $v !== '') + ['format' => 'csv']);
+$csv_query = http_build_query(array_filter($filters, static fn ($v): bool => $v !== '') + ['tab' => 'asset', 'format' => 'csv']);
 
 /** A membership warning that a reader can act on, or nothing. */
 $warnings = static function (array $report): void {
@@ -133,6 +142,7 @@ $warnings = static function (array $report): void {
 echo '<div class="card"><div class="card-body">';
 
 echo '<form method="get" action="' . htmlescape($self) . '" class="row g-2 align-items-end mb-3">';
+echo '<input type="hidden" name="tab" value="asset">';
 echo '<div class="col-md-3"><label class="form-label" for="ua-computer">' . htmlescape(__('Computer', 'integrasipaman')) . '</label>'
     . '<input type="text" class="form-control" id="ua-computer" name="computer" maxlength="100" value="' . htmlescape($filters['computer']) . '"'
     . ' placeholder="' . htmlescape(__('ID or name', 'integrasipaman')) . '"></div>';
@@ -143,7 +153,7 @@ echo '<div class="col-md-3"><label class="form-label" for="ua-group">' . htmlesc
     . '<input type="text" class="form-control" id="ua-group" name="group" maxlength="100" value="' . htmlescape($filters['group']) . '"'
     . ' placeholder="' . htmlescape(__('ID or name', 'integrasipaman')) . '"></div>';
 echo '<div class="col-auto"><button type="submit" class="btn btn-primary">' . htmlescape(__('Apply', 'integrasipaman')) . '</button> '
-    . '<a class="btn btn-outline-secondary" href="' . htmlescape($self) . '">' . htmlescape(__('Reset', 'integrasipaman')) . '</a></div>';
+    . '<a class="btn btn-outline-secondary" href="' . htmlescape($self . '?tab=asset') . '">' . htmlescape(__('Reset', 'integrasipaman')) . '</a></div>';
 echo '<div class="col-auto ms-auto"><a class="btn btn-outline-secondary" href="' . htmlescape($self . '?' . $csv_query) . '">'
     . '<i class="ti ti-download me-1"></i>' . htmlescape(__('Export CSV', 'integrasipaman')) . '</a></div>';
 echo '</form>';
@@ -200,7 +210,7 @@ $grants_page  = array_slice($grants_all, ($page - 1) * $per_page, $per_page);
 /** This page's URL on a given page number, carrying the active filters. */
 $page_url = static function (int $p) use ($self, $filters): string {
     return $self . '?' . http_build_query(
-        array_filter($filters, static fn ($v) => $v !== '') + ['page' => $p]
+        array_filter($filters, static fn ($v) => $v !== '') + ['tab' => 'asset', 'page' => $p]
     );
 };
 

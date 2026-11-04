@@ -174,7 +174,7 @@ foreach (glob($front . '/*.php') as $file) {
     $name = basename($file);
     $src  = (string) file_get_contents($file);
     if (!str_contains($src, 'Html::header(')) {
-        continue;   // export.php / reportexport.php render no GLPI chrome
+        continue;   // export.php / reportexport.php / groupmembers.php render no GLPI chrome
     }
     $ok = preg_match(
         "/Html::header\([^;]*''\s*,\s*\\\\GlpiPlugin\\\\Pgnsuite\\\\Menu::SECTOR,\s*'integrasipaman',\s*(\\\$tab|'[a-z]+')\s*\);\s*"
@@ -199,8 +199,11 @@ foreach (glob($front . '/*.php') as $file) {
 // redirect to front/session.php and renders no chrome of its own.)
 // 19 since the Phase 1 user access page: front/useraccess.php, under its own
 // 'useraccess' option beside the audit report.
-check(count($used) > 0 && array_sum(array_map('count', $used)) === 19,
-      'all 19 chrome-rendering front controllers were found');
+// 21 since v4.11.0: front/accessuser.php and front/accessgroup.php, the User
+// and Group sub-tabs, under that same 'useraccess' option. (The members
+// pop-up, front/groupmembers.php, is an AJAX fragment and renders no chrome.)
+check(count($used) > 0 && array_sum(array_map('count', $used)) === 21,
+      'all 21 chrome-rendering front controllers were found');
 foreach ($used as $key => $files) {
     if ($key === '$tab') {
         continue;

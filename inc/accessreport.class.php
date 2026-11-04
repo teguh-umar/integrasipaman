@@ -215,12 +215,79 @@ class PluginIntegrasipamanAccessReport
     }
 
     /**
-     * Groups and their members, as the entitlement cron stored them.
+     * Whether group membership has been collected, when, and whether that is
+     * stale - for the User and Group tabs, which read the per-person and
+     * per-group report tables and so never call build().
      *
+     * One read of the group table only, restricted to the viewer's
+     * entities. The decision itself is membershipOf(), the same function
+     * groupSnapshot() applies to the rows it reads, so the banner on those
+     * tabs and the one on the asset table cannot disagree.
+     *
+     * @return array{collected:bool,at:?string,stale:bool}
+     */
+    public static function membershipState(): array
+    {
+        $rows = [];
+        foreach (self::groupTableRows(['jms_id', 'date_pulled']) as $row) {
+            $rows[] = $row;
+        }
+
+        return self::membershipOf($rows);
+    }
+
+    /**
+     * The viewer's rows of the group table. The one place both readers of
+     * that table (membershipState() and groupSnapshot()) build its WHERE, so
+     * the banner and the report count the same rows.
+     */
+    private static function groupTableRows(array $select, string $order = ''): iterable
+    {
+        global $DB;
+
+        $query = [
+            'SELECT' => $select,
+            'FROM'   => self::GROUPS_TABLE,
+            'WHERE'  => PluginIntegrasipamanConnection::viewer(),
+        ];
+        if ($order !== '') {
+            $query['ORDER'] = $order;
+        }
+
+        return $DB->request($query);
+    }
+
+    /**
      * `collected` is decided by the presence of any row, including the
      * empty-jms_id marker: an instance with zero groups still records that
      * the pull ran, and "nobody is in any group" must stay distinguishable
-     * from "we never asked".
+     * from "we never asked". `at` is the newest date_pulled.
+     *
+     * @param list<array<string,mixed>> $rows group-table rows
+     * @return array{collected:bool,at:?string,stale:bool}
+     */
+    private static function membershipOf(array $rows): array
+    {
+        $at = null;
+        foreach ($rows as $row) {
+            $date = (string) ($row['date_pulled'] ?? '');
+            if ($date !== '' && ($at === null || $date > $at)) {
+                $at = $date;
+            }
+        }
+
+        return [
+            'collected' => $rows !== [],
+            'at'        => $at,
+            'stale'     => PluginIntegrasipamanEntitlement::isStale($at),
+        ];
+    }
+
+    /**
+     * Groups and their members, as the entitlement cron stored them.
+     *
+     * The membership state is membershipOf() over the same rows, so this
+     * stays one read of the group table (see membershipState()).
      *
      * @return array{0: array<string,array<string,mixed>>, 1: array{collected:bool,at:?string,stale:bool}}
      */
@@ -229,21 +296,13 @@ class PluginIntegrasipamanAccessReport
         global $DB;
 
         $groups = [];
-        $seen   = false;
-        $at     = null;
+        $rows   = [];
 
-        foreach ($DB->request([
-            'SELECT' => ['jms_id', 'name', 'users_amount', 'date_pulled', PluginIntegrasipamanConnection::FK],
-            'FROM'   => self::GROUPS_TABLE,
-            'WHERE'  => PluginIntegrasipamanConnection::viewer(),
-            'ORDER'  => 'name ASC, jms_id ASC',
-        ]) as $row) {
-            $seen = true;
-
-            $date = (string) ($row['date_pulled'] ?? '');
-            if ($date !== '' && ($at === null || $date > $at)) {
-                $at = $date;
-            }
+        foreach (self::groupTableRows(
+            ['jms_id', 'name', 'users_amount', 'date_pulled', PluginIntegrasipamanConnection::FK],
+            'name ASC, jms_id ASC'
+        ) as $row) {
+            $rows[] = $row;
 
             $group_id = trim((string) ($row['jms_id'] ?? ''));
             if ($group_id === '') {
@@ -286,11 +345,7 @@ class PluginIntegrasipamanAccessReport
             ];
         }
 
-        return [$groups, [
-            'collected' => $seen,
-            'at'        => $at,
-            'stale'     => PluginIntegrasipamanEntitlement::isStale($at),
-        ]];
+        return [$groups, self::membershipOf($rows)];
     }
 
     /**

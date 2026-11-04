@@ -16,6 +16,9 @@
 // old data exactly where it was.
 error_reporting(E_ALL & ~E_DEPRECATED);
 define('GLPI_ROOT', __DIR__);
+// mbstring is absent from this CLI; GLPI requires it. Character-wise, as mb_substr() is,
+// so a multi-byte fixture proves the cut is by character, not by byte.
+if (!function_exists('mb_substr')) { function mb_substr($s, $start, $length = null, $e = null) { preg_match_all('/./us', (string) $s, $m); return implode('', array_slice($m[0], $start, $length)); } }
 
 function __($s, $d = null) { return $s; }
 
@@ -289,6 +292,35 @@ check(str_contains($pull_for, 'hostIndex($credentials)'),
       'the host pull is still a single call in pullFor()');
 check(strpos($pull_for, 'pullGroupMembers($credentials') < strpos($pull_for, 'hostIndex($credentials)'),
       'membership is pulled before per-Computer refreshes, once per connection');
+
+// --- Task 2: group description is kept -----------------------------------
+reset_api();
+$GLOBALS['API_GROUPS'] = [['id' => 'G-C', 'name' => 'Apps', 'comment' => 'Tim aplikasi', 'users_amount' => 0]];
+$GLOBALS['API_MEMBERS_BY_GROUP'] = ['/api/v1/users/users/?group_id=G-C' => []];
+$db = new FakeDB(); $GLOBALS['DB'] = $db;
+$E::pullGroupMembers(['https://x', 'k', 's', 'o']);
+$crow = [];
+foreach ($db->seen as $q) {
+    if (($q['INSERT'] ?? '') === $GROUPS) { $crow[(string) ($q['r']['jms_id'] ?? '')] = $q['r']; }
+}
+check(($crow['G-C']['comment'] ?? null) === 'Tim aplikasi', 'the group description is stored');
+check(array_key_exists('comment', $crow['']) && $crow[''] ['comment'] === '', 'the marker row has comment ""');
+
+// --- final review, fix 2a: the comment fits usergroups.comment VARCHAR(255) --
+// On GLPI 11 a value that does not fit is a RuntimeException on strict MySQL,
+// after the DELETE of the previous snapshot.
+reset_api();
+$GLOBALS['API_GROUPS'] = [['id' => 'G-L', 'name' => 'Long', 'comment' => str_repeat('é', 300), 'users_amount' => 0]];
+$GLOBALS['API_MEMBERS_BY_GROUP'] = ['/api/v1/users/users/?group_id=G-L' => []];
+$db = new FakeDB(); $GLOBALS['DB'] = $db;
+$E::pullGroupMembers(['https://x', 'k', 's', 'o']);
+$lrow = [];
+foreach ($db->seen as $q) {
+    if (($q['INSERT'] ?? '') === $GROUPS && ($q['r']['jms_id'] ?? '') === 'G-L') { $lrow = $q['r']; }
+}
+$lcom = (string) ($lrow['comment'] ?? '');
+check($lcom === str_repeat('é', 255),
+      'a 300-character group comment is stored at 255 characters (got ' . preg_match_all('/./us', $lcom) . ')');
 
 echo $fails === 0 ? "\nALL PASS\n" : "\n$fails FAILURE(S)\n";
 exit($fails === 0 ? 0 : 1);

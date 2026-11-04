@@ -25,6 +25,7 @@ if (!defined('GLPI_ROOT')) {
 // Not a CommonGLPI subclass: this registers no tab and is no itemtype.
 // It is a data/cron class, like PluginIntegrasipamanProvisioningAction.
 require_once __DIR__ . '/serverlabel.class.php';
+require_once __DIR__ . '/accessindex.class.php';
 
 class PluginIntegrasipamanEntitlement
 {
@@ -33,6 +34,9 @@ class PluginIntegrasipamanEntitlement
     public const GROUPS_TABLE  = 'glpi_plugin_jumpserver_usergroups';
     public const MEMBERS_TABLE = 'glpi_plugin_jumpserver_groupmembers';
     public const HOSTS_TABLE   = 'glpi_plugin_jumpserver_hosts';
+    public const RULEASSETS_TABLE = 'glpi_plugin_jumpserver_ruleassets';
+    public const JMSUSERS_TABLE = 'glpi_plugin_jumpserver_jmsusers';
+    public const USERS_PATH = '/api/v1/users/users/';
 
     /**
      * jms_id of the row that records "a complete membership pull ran".
@@ -137,6 +141,7 @@ class PluginIntegrasipamanEntitlement
                 'user_groups_json' => json_encode($groups[$jms_id] ?? []),
                 'accounts'         => self::flatten($rule['accounts'] ?? ''),
                 'actions'          => self::flatten($rule['actions'] ?? ''),
+                'protocols'        => mb_substr(self::flatten($rule['protocols'] ?? ''), 0, 255),
                 'is_active'        => !empty($rule['is_active']) ? 1 : 0,
                 'is_valid'         => !empty($rule['is_valid']) ? 1 : 0,
                 'is_expired'       => !empty($rule['is_expired']) ? 1 : 0,
@@ -275,6 +280,7 @@ class PluginIntegrasipamanEntitlement
                 'jms_id'        => $group_id,
                 'name'          => (string) ($group['name'] ?? ''),
                 'users_amount'  => $expected,
+                'comment'       => mb_substr((string) ($group['comment'] ?? ''), 0, 255),
                 'date_pulled'   => $now,
             ];
             foreach ($members as $member) {
@@ -288,6 +294,7 @@ class PluginIntegrasipamanEntitlement
             'jms_id'       => self::GROUP_PULL_MARKER,
             'name'         => '',
             'users_amount' => 0,
+            'comment'      => '',
             'date_pulled'  => $now,
         ];
 
@@ -313,6 +320,85 @@ class PluginIntegrasipamanEntitlement
         $say(sprintf('%d group(s), %d membership row(s) collected.', count($groups), count($member_rows)));
 
         return count($member_rows);
+    }
+
+    /**
+     * Every JumpServer user with their system role(s), for the User tab.
+     * Collect everything first, write only after a complete, well-formed answer.
+     *
+     * @param array{0:string,1:string,2:string,3:string} $credentials
+     * @return int users stored, or -1 when the previous snapshot was left in place
+     */
+    public static function pullUsers(array $credentials, ?CronTask $task = null): int
+    {
+        global $DB;
+
+        $say = static function (string $message) use ($task): void {
+            if ($task !== null) {
+                $task->log($message);
+            }
+        };
+
+        [$base_url, $access_key_id, $access_key_secret, $org_id] = $credentials;
+
+        $now       = $_SESSION['glpi_currenttime'] ?? date('Y-m-d H:i:s');
+        $users     = [];
+        $malformed = false;
+
+        $complete = PluginIntegrasipamanJmsApi::signedGetEach(
+            self::USERS_PATH,
+            $base_url,
+            $access_key_id,
+            $access_key_secret,
+            $org_id,
+            static function (array $page) use (&$users, &$malformed, $now): void {
+                foreach ($page as $user) {
+                    if (!is_array($user)) {
+                        $malformed = true;
+                        continue;
+                    }
+                    $user_id = trim((string) ($user['id'] ?? ''));
+                    if ($user_id === '') {
+                        $malformed = true;
+                        continue;
+                    }
+                    $roles = [];
+                    foreach ((array) ($user['system_roles'] ?? []) as $role) {
+                        $label = is_array($role) ? trim((string) ($role['display_name'] ?? '')) : '';
+                        if ($label !== '') {
+                            $roles[] = $label;
+                        }
+                    }
+                    $users[$user_id] = [
+                        'jms_id'      => $user_id,
+                        'username'    => mb_substr((string) ($user['username'] ?? ''), 0, 191),
+                        'name'        => mb_substr((string) ($user['name'] ?? ''), 0, 191),
+                        'system_role' => mb_substr(implode(', ', $roles), 0, 191),
+                        'date_pulled' => $now,
+                    ];
+                }
+            },
+            self::MEMBER_PAGE_SIZE
+        );
+
+        if (!$complete || $malformed) {
+            $say('The user list was incomplete - the previous user snapshot was left in place.');
+            return -1;
+        }
+
+        $rows = PluginIntegrasipamanConnection::stampRows(array_values($users));
+
+        $DB->delete(self::JMSUSERS_TABLE, PluginIntegrasipamanConnection::ownRows());
+        foreach ($rows as $row) {
+            if (!$DB->insert(self::JMSUSERS_TABLE, $row)) {
+                trigger_error('Unable to store a JumpServer user: ' . $DB->error(), E_USER_WARNING);
+                return -1;
+            }
+        }
+
+        $say(sprintf('%d user(s) collected.', count($rows)));
+
+        return count($rows);
     }
 
     /** JumpServer returns some of these as lists of scalars or of objects. */
@@ -543,36 +629,60 @@ class PluginIntegrasipamanEntitlement
      * Deliberately one API call for both: the host list is 645 rows on one
      * paginated request and cannot change within a run.
      *
+     * `complete` says whether every page came back. signedGet() used to hand
+     * back page 1 alone when page 2 failed, with no signal; the list is two
+     * pages in production. A partial list is still returned as it is - the
+     * 4.10 steps use what they receive, as before - but a step that would
+     * DELETE what the list does not name (the ruleassets prune) must not.
+     *
      * @param array{0:string,1:string,2:string,3:string} $credentials
-     * @return array{lookup: array<string,string>, hosts: array<string,array{name:string,address:string}>}
+     * @return array{lookup: array<string,string>, hosts: array<string,array{name:string,address:string,protocols:list<string>}>, complete: bool}
      */
     public static function hostIndex(array $credentials): array
     {
-        $response = PluginIntegrasipamanJmsApi::signedGet('/api/v1/assets/hosts/?limit=500', ...$credentials);
+        [$base_url, $access_key_id, $access_key_secret, $org_id] = $credentials;
 
         $lookup = [];
         $hosts  = [];
-        foreach ((array) $response as $h) {
-            if (!is_array($h)) {
-                continue;
-            }
-            $id = (string) ($h['id'] ?? '');
-            if ($id === '') {
-                continue;
-            }
-            $name    = trim((string) ($h['name'] ?? ''));
-            $address = trim((string) ($h['address'] ?? ''));
-            $hosts[$id] = ['name' => $name, 'address' => $address];
 
-            foreach ([$name, $address] as $key) {
-                $key = strtolower($key);
-                if ($key !== '') {
-                    $lookup[$key] = $id;
+        $complete = PluginIntegrasipamanJmsApi::signedGetEach(
+            '/api/v1/assets/hosts/?limit=500',
+            $base_url,
+            $access_key_id,
+            $access_key_secret,
+            $org_id,
+            static function (array $page) use (&$lookup, &$hosts): void {
+                foreach ($page as $h) {
+                    if (!is_array($h)) {
+                        continue;
+                    }
+                    $id = (string) ($h['id'] ?? '');
+                    if ($id === '') {
+                        continue;
+                    }
+                    $name    = trim((string) ($h['name'] ?? ''));
+                    $address = trim((string) ($h['address'] ?? ''));
+                    $protocols = [];
+                    foreach ((array) ($h['protocols'] ?? []) as $proto) {
+                        $pname = is_array($proto) ? trim((string) ($proto['name'] ?? '')) : trim((string) $proto);
+                        if ($pname !== '' && !in_array($pname, $protocols, true)) {
+                            $protocols[] = $pname;
+                        }
+                    }
+                    $hosts[$id] = ['name' => $name, 'address' => $address, 'protocols' => $protocols];
+
+                    foreach ([$name, $address] as $key) {
+                        $key = strtolower($key);
+                        if ($key !== '') {
+                            $lookup[$key] = $id;
+                        }
+                    }
                 }
-            }
-        }
+            },
+            500
+        );
 
-        return ['lookup' => $lookup, 'hosts' => $hosts];
+        return ['lookup' => $lookup, 'hosts' => $hosts, 'complete' => $complete];
     }
 
     /**
@@ -583,7 +693,7 @@ class PluginIntegrasipamanEntitlement
      * A name that is merely old is still the right name far more often than
      * no name at all, and the report shows the id beside it either way.
      *
-     * @param array<string,array{name:string,address:string}> $hosts
+     * @param array<string,array{name:string,address:string,protocols?:list<string>}> $hosts
      * @return int rows written, or -1 when nothing was usable
      */
     public static function storeHosts(array $hosts): int
@@ -606,6 +716,7 @@ class PluginIntegrasipamanEntitlement
             $DB->updateOrInsert(self::HOSTS_TABLE, [
                 'name'        => (string) ($host['name'] ?? ''),
                 'address'     => (string) ($host['address'] ?? ''),
+                'protocols'   => mb_substr(implode(', ', (array) ($host['protocols'] ?? [])), 0, 255),
                 'date_pulled' => $now,
             ] + $stamp, [
                 'plugin_jumpserver_connections_id' => $stamp[PluginIntegrasipamanConnection::FK] ?? 0,
@@ -746,6 +857,85 @@ class PluginIntegrasipamanEntitlement
         }
 
         return count($rule_ids);
+    }
+
+    /**
+     * Which permission rules reach each JumpServer host, correlated to a
+     * Computer or not. Same path refreshComputer() uses, because that path
+     * is the one proven to resolve node inheritance.
+     *
+     * Per asset: null (call failed) keeps the old rows; [] is a real answer
+     * and clears them. The final prune runs only for a non-empty host list,
+     * so an empty list can never wipe the table, and only when the caller
+     * says the list is whole ($prune): a host list cut short by a failed page
+     * would otherwise prune every host it did not get to.
+     *
+     * Without a current connection nothing is asked or written, as in
+     * AccessIndex::rebuild(): ownRows() is then [], and the prune would be a
+     * DELETE across every connection's rows.
+     *
+     * @param array{0:string,1:string,2:string,3:string} $credentials
+     * @param list<string> $asset_ids
+     * @param bool $prune false when $asset_ids is not the whole host list
+     * @return array{refreshed:int, failed:int, pruned:bool}
+     */
+    public static function pullRuleAssets(array $credentials, array $asset_ids, ?CronTask $task = null, bool $prune = true): array
+    {
+        global $DB;
+
+        $out = ['refreshed' => 0, 'failed' => 0, 'pruned' => false];
+        if (PluginIntegrasipamanConnection::ownRows() === []) {
+            return $out;
+        }
+        $asset_ids = array_values(array_unique(array_map('strval', $asset_ids)));
+        if ($asset_ids === []) {
+            return $out;
+        }
+
+        $now = $_SESSION['glpi_currenttime'] ?? date('Y-m-d H:i:s');
+
+        foreach ($asset_ids as $asset_id) {
+            $rules = PluginIntegrasipamanJmsApi::signedGet(
+                '/api/v1/perms/asset-permissions/?limit=200&asset_id=' . urlencode($asset_id),
+                ...$credentials
+            );
+            if (!is_array($rules)) {
+                $out['failed']++;
+                continue;
+            }
+
+            $rule_ids = [];
+            foreach ($rules as $rule) {
+                $rid = is_array($rule) ? (string) ($rule['id'] ?? '') : '';
+                if ($rid !== '') {
+                    $rule_ids[$rid] = true;
+                }
+            }
+
+            $DB->delete(self::RULEASSETS_TABLE, PluginIntegrasipamanConnection::ownRows() + ['jms_asset_id' => $asset_id]);
+            foreach (array_keys($rule_ids) as $rid) {
+                $DB->insert(self::RULEASSETS_TABLE, [
+                    'permrules_jms_id' => (string) $rid,
+                    'jms_asset_id'     => $asset_id,
+                    'date_refreshed'   => $now,
+                ] + PluginIntegrasipamanConnection::stamp());
+            }
+            $out['refreshed']++;
+        }
+
+        if ($prune && $asset_ids !== []) {
+            $DB->delete(self::RULEASSETS_TABLE, PluginIntegrasipamanConnection::ownRows() + ['NOT' => ['jms_asset_id' => $asset_ids]]);
+            $out['pruned'] = true;
+        }
+
+        if ($task !== null) {
+            $task->log(sprintf('%d host(s) refreshed, %d failed.', $out['refreshed'], $out['failed']));
+            if (!$prune) {
+                $task->log('The host list was incomplete - the prune of hosts it did not list was skipped, and their rule-to-host rows were left in place.');
+            }
+        }
+
+        return $out;
     }
 
     /**
@@ -1034,6 +1224,47 @@ class PluginIntegrasipamanEntitlement
         $task->log($named < 0
             ? PluginIntegrasipamanServerLabel::in('No host names collected from {server}; the previous names were left in place.')
             : sprintf('%d host name(s) stored.', $named));
+
+        // The User and Group sub-tabs. Each step keeps its previous snapshot
+        // when its call fails, and none of them stops the rest of the run:
+        // on GLPI 11 a SQL error is a RuntimeException, not a false return,
+        // so each step is caught on its own and the run goes on to the
+        // liveness and per-Computer steps below.
+        // pullUsers() logs its own line, success or not.
+        try {
+            self::pullUsers($credentials, $task);
+        } catch (\Throwable $e) {
+            $task->log('pullUsers failed: ' . $e->getMessage());
+        }
+
+        // Which rules reach every host, correlated to a Computer or not.
+        // It logs its own line; an empty host list asks nothing and prunes
+        // nothing, so say that here. An incomplete host list refreshes the
+        // hosts it names and prunes nothing (pullRuleAssets() says so).
+        try {
+            $rule_assets = self::pullRuleAssets($credentials, array_keys($index['hosts']), $task, $index['complete']);
+            if (!$rule_assets['pruned'] && $index['hosts'] === []) {
+                $task->log('No host list - the rule-to-host map was left in place.');
+            }
+        } catch (\Throwable $e) {
+            $task->log('pullRuleAssets failed: ' . $e->getMessage());
+        }
+
+        // One row per person and per group, from the snapshot as it now is.
+        // A failed rebuild rolls back and leaves the previous report.
+        try {
+            $built = PluginIntegrasipamanAccessIndex::rebuild();
+            $task->log(sprintf(
+                'Access report rebuilt: %d user row(s), %d group row(s); peak memory %.1f MB.',
+                $built['users'],
+                $built['groups'],
+                memory_get_peak_usage(true) / 1048576
+            ));
+        } catch (\Throwable $e) {
+            // CronTask::log() keeps 200 characters: the step name stays short
+            // so the SQL error itself fits.
+            $task->log('AccessIndex::rebuild failed (previous report kept): ' . $e->getMessage());
+        }
 
         $live = self::markLiveAssets($lookup);
         $task->log($live < 0

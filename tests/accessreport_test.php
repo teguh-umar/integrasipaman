@@ -572,6 +572,39 @@ check(count($alice_named['rows']) === 1
       && $R::assetName($alice_named['rows'][0]) === 'host-retired-07',
       'the User tab pane shows the same name after the collapse');
 
+// --- membershipState(): the banner of the User and Group tabs (Task 7) ----
+// One read, of the group table only, with groupSnapshot()'s definition.
+$db = new FakeDB();
+$db->canned = [[]];
+$GLOBALS['DB'] = $db;
+$ms = $R::membershipState();
+check($ms === ['collected' => false, 'at' => null, 'stale' => true],
+      'membershipState(): an empty group table means never collected (got ' . j($ms) . ')');
+check(count($db->seen) === 1 && ($db->seen[0]['FROM'] ?? '') === $R::GROUPS_TABLE,
+      'it is one read, of the group table only');
+check(str_contains(j($db->seen[0]['WHERE'] ?? []), '[6,7]'), 'and limited to the viewer\'s entities');
+
+$db = new FakeDB();
+$db->canned = [[['jms_id' => '', 'name' => '', 'users_amount' => 0, 'date_pulled' => $recent]]];
+$GLOBALS['DB'] = $db;
+$ms = $R::membershipState();
+check($ms['collected'] === true && $ms['stale'] === false && $ms['at'] === $recent,
+      'only the pull marker still means collected, and recent (got ' . j($ms) . ')');
+
+$db = new FakeDB();
+$db->canned = [[['jms_id' => 'G-OPS', 'name' => 'Operations', 'users_amount' => 2, 'date_pulled' => $old]]];
+$GLOBALS['DB'] = $db;
+$ms = $R::membershipState();
+check($ms === ['collected' => true, 'at' => $old, 'stale' => true], 'an old pull is collected and stale');
+
+// The same rows give the same answer through build(): the two cannot differ.
+foreach ([[], [['jms_id' => '', 'name' => '', 'users_amount' => 0, 'date_pulled' => $recent]], $group_rows] as $rows) {
+    $db = new FakeDB(); $db->canned = [$rows]; $GLOBALS['DB'] = $db;
+    $alone = $R::membershipState();
+    [, $via_build] = build_with([], $rows, [], []);
+    check($alone === $via_build['membership'], 'membershipState() equals build()\'s membership for the same rows');
+}
+
 
 echo $fails === 0 ? "\nALL PASS\n" : "\n$fails FAILURE(S)\n";
 exit($fails === 0 ? 0 : 1);

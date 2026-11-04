@@ -7,6 +7,9 @@
 // renders as "no one has access" and looks like a real answer.
 error_reporting(E_ALL & ~E_DEPRECATED);
 define('GLPI_ROOT', __DIR__);
+// mbstring is absent from this CLI; GLPI requires it. Character-wise, as mb_substr() is,
+// so a multi-byte fixture proves the cut is by character, not by byte.
+if (!function_exists('mb_substr')) { function mb_substr($s, $start, $length = null, $e = null) { preg_match_all('/./us', (string) $s, $m); return implode('', array_slice($m[0], $start, $length)); } }
 
 function __($s, $d = null) { return $s; }
 
@@ -23,6 +26,31 @@ class PluginIntegrasipamanJmsApi
             if (str_contains($path, $frag)) { return $rows; }
         }
         return [];
+    }
+    /** Task 5: pullUsers() pages through signedGetEach(). A path with no
+     *  entry in API_EACH answers false (an incomplete list), so pullUsers()
+     *  keeps the previous snapshot and writes nothing. */
+    public static function signedGetEach($path, $base, $kid, $secret, $org, callable $each, $size = 100): bool
+    {
+        self::$asked[] = $path;
+        foreach ($GLOBALS['API_EACH'] ?? [] as $frag => $rows) {
+            if (str_contains($path, $frag)) { $each($rows); return true; }
+        }
+        // Final review, fix 1: hostIndex() pages the host list through
+        // signedGetEach(). It answers from API_RESPONSES as signedGet() did
+        // (null = first page failed, [] = no host). HOSTS_INCOMPLETE hands
+        // over those rows and then reports a later page as failed.
+        if (str_contains($path, 'assets/hosts/')) {
+            foreach ($GLOBALS['API_RESPONSES'] as $frag => $rows) {
+                if (str_contains($path, $frag)) {
+                    if (!is_array($rows)) { return false; }
+                    if ($rows !== []) { $each($rows); }
+                    return empty($GLOBALS['HOSTS_INCOMPLETE']);
+                }
+            }
+            return true;
+        }
+        return false;
     }
 }
 
@@ -44,7 +72,20 @@ class FakeDB
         return new ArrayIterator(array_shift($this->canned) ?? []);
     }
     public function updateOrInsert($table, $params, $where) { $this->seen[] = ['UPSERT' => $table, 'p' => $params, 'w' => $where]; return true; }
-    public function insert($table, $params) { $this->seen[] = ['INSERT' => $table, 'p' => $params]; return true; }
+    /** Final review, fix 2: GLPI 11 throws on a SQL error (DBmysql::doQuery()). */
+    public ?string $throw_on_insert = null;
+    public function insert($table, $params)
+    {
+        $this->seen[] = ['INSERT' => $table, 'p' => $params];
+        if ($table === $this->throw_on_insert) {
+            throw new RuntimeException('MySQL query error: Data too long for column (fake)');
+        }
+        return true;
+    }
+    public function beginTransaction(): void { $this->seen[] = ['TX' => 'begin']; }
+    public function commit(): void { $this->seen[] = ['TX' => 'commit']; }
+    public function rollBack(): void { $this->seen[] = ['TX' => 'rollback']; }
+    public function error() { return 'fake'; }
     public function delete($table, $where) { $this->seen[] = ['DELETE' => $table, 'w' => $where]; return true; }
     public function update($table, $params, $where) { $this->seen[] = ['UPDATE' => $table, 'p' => $params, 'w' => $where]; return true; }
 }
@@ -418,9 +459,16 @@ PluginIntegrasipamanJmsApi::$asked = [];
 $task = new CronTask();
 $E::cronEntitlement_pull($task);
 
+// Read from refreshComputer()'s own writes (its assetperms DELETE per
+// Computer), not from the API calls: pullRuleAssets() asks the same
+// asset_id= path for every host earlier in the run. Each Computer here
+// matches exactly one host, so the Computer id names its asset.
+$asset_of = [11 => 'A11', 12 => 'A12', 13 => 'A13'];
 $order = [];
-foreach (PluginIntegrasipamanJmsApi::$asked as $path) {
-    if (preg_match('/asset_id=(A\d+)/', $path, $m)) { $order[] = $m[1]; }
+foreach ($db->seen as $q) {
+    if (($q['DELETE'] ?? null) === $E::MAP_TABLE && isset($q['w']['computers_id'])) {
+        $order[] = $asset_of[(int) $q['w']['computers_id']] ?? ('#' . $q['w']['computers_id']);
+    }
 }
 check($order === ['A11', 'A12', 'A13'],
       'the batch runs never-refreshed first, then oldest-refreshed first (got ' . implode(',', $order) . ')');
@@ -450,9 +498,48 @@ $GLOBALS['API_RESPONSES'] = [
 ];
 PluginIntegrasipamanJmsApi::$asked = [];
 $E::cronEntitlement_pull(new CronTask());
-$per_asset = count(array_filter(PluginIntegrasipamanJmsApi::$asked, static fn($p) => str_contains($p, 'asset_id=')));
+// Counted from refreshComputer()'s assetperms DELETE per Computer, not from
+// the asset_id= calls, which pullRuleAssets() also makes for every host.
+$per_asset = count(array_filter($db->seen, static fn($q) => ($q['DELETE'] ?? null) === $E::MAP_TABLE && isset($q['w']['computers_id'])));
 check($per_asset === $E::BATCH_LIMIT,
       'exactly BATCH_LIMIT Computers are refreshed out of ' . ($E::BATCH_LIMIT + 50) . ' candidates (got ' . $per_asset . ')');
+
+// --- Task 5: users, rule->host map and the access report, after the hosts --
+$db = new FakeDB(); $GLOBALS['DB'] = $db;
+$db->tables = [
+    'glpi_computers'                    => [],
+    'glpi_ipaddresses'                  => [],
+    'glpi_plugin_jumpserver_assetmap'   => [],
+    'glpi_plugin_jumpserver_assetperms' => [],
+];
+$GLOBALS['API_RESPONSES'] = [
+    'asset-permissions-users-relations'       => [],
+    'asset-permissions-user-groups-relations' => [],
+    'perms/asset-permissions/'                => [],
+    'assets/hosts/'                           => [['id' => 'A21', 'name' => 'host-21', 'address' => '']],
+    'asset_id='                               => [],
+];
+$GLOBALS['API_EACH'] = [
+    '/api/v1/users/users/' => [['id' => 'U21', 'username' => 'u21', 'name' => 'User 21', 'system_roles' => []]],
+];
+$task = new CronTask();
+$E::cronEntitlement_pull($task);
+$GLOBALS['API_EACH'] = [];
+$at = static function (string $needle) use ($task): int {
+    foreach ($task->logs as $i => $line) {
+        if (str_contains((string) $line, $needle)) { return $i; }
+    }
+    return -1;
+};
+$i_hosts = $at('host name(s) stored');
+$i_users = $at('user(s) collected');
+$i_ra    = $at('host(s) refreshed');
+$i_rb    = $at('Access report rebuilt');
+check($i_hosts >= 0 && $i_hosts < $i_users && $i_users < $i_ra && $i_ra < $i_rb,
+      'after "host name(s) stored": the pullUsers line, then pullRuleAssets, then rebuild (got '
+      . "$i_hosts,$i_users,$i_ra,$i_rb: " . implode(' | ', $task->logs) . ')');
+check(in_array('glpi_plugin_jumpserver_accessusers', array_map(static fn($q) => $q['DELETE'] ?? null, $db->seen), true),
+      'the run rebuilds the per-user report table');
 
 // --- live_checked_at: confirmed present, never "marked dead" ------------
 $db = new FakeDB(); $GLOBALS['DB'] = $db;
@@ -564,6 +651,37 @@ check(array_key_exists('date_pulled', $upserts[0]['p']),
 check(array_key_exists('entities_id', $upserts[0]['p']),
       'and stamped with the entity, like every other pulled row');
 
+// --- Task 2: rule and host protocols are kept ----------------------------
+$db = new FakeDB(); $GLOBALS['DB'] = $db;
+$GLOBALS['API_RESPONSES'] = [
+    'asset-permissions-users-relations'       => [],
+    'asset-permissions-user-groups-relations' => [],
+    'perms/asset-permissions/'                => [
+        ['id' => 'RP1', 'name' => 'All protocols', 'protocols' => ['all']],
+        ['id' => 'RP2', 'name' => 'Some protocols', 'protocols' => ['ssh', 'rdp']],
+    ],
+];
+$E::pullRules(['https://x', 'k', 's', 'o']);
+$ups = array_values(array_filter($db->seen, static fn($q) => isset($q['UPSERT'])));
+check(($ups[0]['p']['protocols'] ?? null) === 'all', 'a rule with ["all"] stores "all" (got ' . var_export($ups[0]['p']['protocols'] ?? null, true) . ')');
+check(($ups[1]['p']['protocols'] ?? null) === 'ssh, rdp', 'a rule with ["ssh","rdp"] stores "ssh, rdp" (got ' . var_export($ups[1]['p']['protocols'] ?? null, true) . ')');
+
+$GLOBALS['API_RESPONSES'] = [
+    'assets/hosts/' => [
+        ['id' => 'H1', 'name' => 'h-one', 'address' => '10.0.0.1',
+         'protocols' => [['name' => 'ssh', 'port' => 22], ['name' => 'sftp', 'port' => 22], ['name' => 'ssh', 'port' => 2222]]],
+        ['id' => 'H2', 'name' => 'h-two', 'address' => '10.0.0.2'],
+    ],
+];
+$pidx = $E::hostIndex(['https://x', 'k', 's', 'o']);
+check(($pidx['hosts']['H1']['protocols'] ?? null) === ['ssh', 'sftp'], 'host protocols: names only, no duplicates, response order');
+check(($pidx['hosts']['H2']['protocols'] ?? null) === [], 'a host without protocols yields []');
+$db = new FakeDB(); $GLOBALS['DB'] = $db;
+$E::storeHosts($pidx['hosts']);
+$hups = array_values(array_filter($db->seen, static fn($q) => isset($q['UPSERT'])));
+check(($hups[0]['p']['protocols'] ?? null) === 'ssh, sftp', 'storeHosts writes "ssh, sftp"');
+check(($hups[1]['p']['protocols'] ?? null) === '', 'storeHosts writes "" for a host without protocols');
+
 // The pull must collect the names before it walks the Computers, and it must
 // not stop the run when they cannot be collected.
 $src = (string) file_get_contents(__DIR__ . '/../inc/entitlement.class.php');
@@ -575,6 +693,125 @@ check(strpos($src, 'storeHosts($index[') < strpos($src, 'candidateAssets($lookup
 check(strpos($src, 'left in place') !== false,
       'a failed host pull keeps the previous names rather than emptying them');
 
+
+// --- final review, fix 1: hostIndex() says whether the host list is whole ------
+$GLOBALS['HOSTS_INCOMPLETE'] = false;
+$GLOBALS['API_RESPONSES'] = ['assets/hosts/' => [
+    ['id' => 'A1', 'name' => 'host-one', 'address' => '192.0.2.1'],
+    ['id' => 'A2', 'name' => 'host-two', 'address' => '192.0.2.2'],
+]];
+$full = $E::hostIndex(['https://x', 'k', 's', 'o']);
+check(($full['complete'] ?? null) === true, 'a host list read to the end is complete');
+$GLOBALS['HOSTS_INCOMPLETE'] = true;
+$part = $E::hostIndex(['https://x', 'k', 's', 'o']);
+check(($part['complete'] ?? null) === false, 'a host list cut short by a failed later page says so (complete=false)');
+check($part['lookup'] === $full['lookup'] && $part['hosts'] === $full['hosts'],
+      'and still returns the hosts it got, exactly as before: the 4.10 steps use what they receive');
+$GLOBALS['HOSTS_INCOMPLETE'] = false;
+$GLOBALS['API_RESPONSES'] = ['assets/hosts/' => null];
+$none = $E::hostIndex(['https://x', 'k', 's', 'o']);
+check(($none['complete'] ?? null) === false && $none['lookup'] === [] && $none['hosts'] === [],
+      'a failed first page is incomplete and empty');
+
+// The cron with a partial host list: no NOT-IN prune of ruleassets, the listed
+// hosts are still refreshed, and the 4.10 host-name step stores what it got.
+$cron_partial = static function (bool $incomplete): array {
+    $db = new FakeDB(); $GLOBALS['DB'] = $db;
+    $db->tables = [
+        'glpi_computers'                    => [],
+        'glpi_ipaddresses'                  => [],
+        'glpi_plugin_jumpserver_assetmap'   => [],
+        'glpi_plugin_jumpserver_assetperms' => [],
+    ];
+    $GLOBALS['API_RESPONSES'] = [
+        'asset-permissions-users-relations'       => [],
+        'asset-permissions-user-groups-relations' => [],
+        'perms/asset-permissions/'                => [],
+        'assets/hosts/'                           => [
+            ['id' => 'A31', 'name' => 'host-31', 'address' => ''],
+            ['id' => 'A32', 'name' => 'host-32', 'address' => ''],
+        ],
+        'asset_id=' => [['id' => 'R31']],
+    ];
+    $GLOBALS['HOSTS_INCOMPLETE'] = $incomplete;
+    $task = new CronTask();
+    PluginIntegrasipamanEntitlement::cronEntitlement_pull($task);
+    $GLOBALS['HOSTS_INCOMPLETE'] = false;
+    return [$db, $task];
+};
+$RA = $E::RULEASSETS_TABLE;
+[$db, $task] = $cron_partial(true);
+$prunes = array_filter($db->seen, static fn($q) => ($q['DELETE'] ?? null) === $RA && isset($q['w']['NOT']));
+check(count($prunes) === 0, 'partial host list: zero NOT-IN prune of the rule-to-host map (got ' . count($prunes) . ')');
+$refreshed = [];
+foreach ($db->seen as $q) {
+    if (($q['DELETE'] ?? null) === $RA && isset($q['w']['jms_asset_id']) && !isset($q['w']['NOT'])) { $refreshed[] = $q['w']['jms_asset_id']; }
+}
+check($refreshed === ['A31', 'A32'], 'partial host list: the listed hosts are still refreshed (got ' . implode(',', $refreshed) . ')');
+check(count(array_filter($task->logs, static fn($l) => str_contains((string) $l, 'prune') && str_contains((string) $l, 'skipped'))) === 1,
+      'partial host list: the log says the prune was skipped');
+check(in_array('2 host name(s) stored.', $task->logs, true), 'partial host list: storeHosts() still stores what it got');
+[$db, $task] = $cron_partial(false);
+check(count(array_filter($db->seen, static fn($q) => ($q['DELETE'] ?? null) === $RA && isset($q['w']['NOT']))) === 1,
+      'the same run with a complete host list prunes once, as before');
+
+// --- final review, fix 2a: protocols fit their VARCHAR(255) columns -------------
+$db = new FakeDB(); $GLOBALS['DB'] = $db;
+$GLOBALS['API_RESPONSES'] = [
+    'asset-permissions-users-relations'       => [],
+    'asset-permissions-user-groups-relations' => [],
+    'perms/asset-permissions/'                => [['id' => 'RL', 'name' => 'Long', 'protocols' => array_fill(0, 100, 'proto')]],
+];
+$E::pullRules(['https://x', 'k', 's', 'o']);
+$lp = (string) (array_values(array_filter($db->seen, static fn($q) => isset($q['UPSERT'])))[0]['p']['protocols'] ?? '');
+check(strlen($lp) === 255, 'a rule protocol list longer than 255 characters is stored at 255 (got ' . strlen($lp) . ')');
+$db = new FakeDB(); $GLOBALS['DB'] = $db;
+$E::storeHosts(['HL' => ['name' => 'h', 'address' => '', 'protocols' => array_fill(0, 100, 'proto')]]);
+$hp = (string) (array_values(array_filter($db->seen, static fn($q) => isset($q['UPSERT'])))[0]['p']['protocols'] ?? '');
+check(strlen($hp) === 255, 'a host protocol list longer than 255 characters is stored at 255 (got ' . strlen($hp) . ')');
+
+// --- final review, fix 2b: a SQL error in a 4.11 step does not stop the run -----
+$db = new FakeDB(); $GLOBALS['DB'] = $db;
+$db->throw_on_insert = 'glpi_plugin_jumpserver_accessusers';
+$db->tables = [
+    'glpi_computers'                    => [['id' => 41, 'name' => 'host-41']],
+    'glpi_ipaddresses'                  => [],
+    'glpi_plugin_jumpserver_assetmap'   => [],
+    'glpi_plugin_jumpserver_assetperms' => [],
+    // What rebuild() reads back: one rule reaching one host names one user,
+    // so it composes one accessusers row, and that INSERT throws.
+    'glpi_plugin_jumpserver_permrules'  => [[
+        'jms_id' => 'R41', 'name' => 'Rule 41', 'users_json' => json_encode([['id' => 'U41', 'display' => 'User 41']]),
+        'user_groups_json' => '[]', 'accounts' => '', 'actions' => '', 'protocols' => 'all', 'is_valid' => 1, 'is_expired' => 0,
+    ]],
+    'glpi_plugin_jumpserver_ruleassets' => [['permrules_jms_id' => 'R41', 'jms_asset_id' => 'A41']],
+];
+$GLOBALS['API_RESPONSES'] = [
+    'asset-permissions-users-relations'       => [],
+    'asset-permissions-user-groups-relations' => [],
+    'perms/asset-permissions/'                => [],
+    'assets/hosts/'                           => [['id' => 'A41', 'name' => 'host-41', 'address' => '']],
+    'asset_id='                               => [],
+];
+$task = new CronTask();
+$E::cronEntitlement_pull($task);
+$err = array_values(array_filter($task->logs, static fn($l) => str_contains((string) $l, 'rebuild') && str_contains((string) $l, 'Data too long for column (fake)')));
+check(count($err) === 1, 'the log has the rebuild error line with the exception message (' . implode(' | ', $task->logs) . ')');
+check(count(array_filter($db->seen, static fn($q) => ($q['DELETE'] ?? null) === $E::MAP_TABLE && ($q['w']['computers_id'] ?? null) === 41)) === 1,
+      'and the run still reaches the per-Computer refresh after it');
+check(count(array_filter($task->logs, static fn($l) => str_contains((string) $l, 'the collection stopped'))) === 0,
+      'the connection run is not reported as stopped');
+check(in_array(['TX' => 'rollback'], $db->seen, true) && !in_array(['TX' => 'commit'], $db->seen, true),
+      'the failed rebuild was rolled back, not committed');
+
+// --- final review, fix 5: the rebuild log line carries the peak memory ----------
+$db = new FakeDB(); $GLOBALS['DB'] = $db;
+$db->tables = ['glpi_computers' => [], 'glpi_ipaddresses' => [], 'glpi_plugin_jumpserver_assetmap' => [], 'glpi_plugin_jumpserver_assetperms' => []];
+$GLOBALS['API_RESPONSES'] = ['assets/hosts/' => [['id' => 'A51', 'name' => 'host-51', 'address' => '']], 'asset_id=' => []];
+$task = new CronTask();
+$E::cronEntitlement_pull($task);
+check(count(preg_grep('/^Access report rebuilt: \d+ user row\(s\), \d+ group row\(s\); peak memory \d+\.\d MB\.$/', $task->logs)) === 1,
+      'the rebuild line records the peak memory in MB (' . implode(' | ', preg_grep('/rebuilt/', $task->logs)) . ')');
 
 echo $fails === 0 ? "\nALL PASS\n" : "\n$fails FAILURE(S)\n";
 exit($fails === 0 ? 0 : 1);

@@ -11,6 +11,12 @@ Author: ICT.
 This changelog starts at 4.11.0. For earlier releases, see the release's deploy checklist in the source repository
 (`docs/vX.Y.Z-deploy-checklist.md`) and its git tag.
 
+## [4.15.1] — 2026-11-10
+
+### Changed
+- **Manual updated to 4.15.0.** `docs/manual.md` is copied again from the suite's `docs/manual/integrasipaman.md`, which Copilot brought from 4.5.0 to 4.15.0. The scrubbed text names no hosts, IPs or people. Final: the §4.6 row "Platforms by OS family" had 4 cells in a 3-column table, so its explanation was dropped; fixed at the source and copied again.
+- **Lag warning ignores the patch level.** The Manual page warns only when the manual documents an older minor release (4.15.0 is current for any 4.15.x). The version line is also read when it is bold (`**4.15.0**`), as the new header writes it.
+
 ## [4.15.0] — 2026-11-09
 
 ### Added

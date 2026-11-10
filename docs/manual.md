@@ -1,14 +1,17 @@
 # JumpServer Integration Dashboard (`integrasipaman`) — Manual Penggunaan
 
-> Versi didokumentasikan: 4.5.0 (tag `v4.5.0`) · Status VM: **v4.5.0 LIVE di GLPI-SERVER**, terverifikasi 2026-10-21 · Terakhir diperbarui: 2026-10-21
+> Versi didokumentasikan: **4.15.0** (tag `v4.15.0`) · Status: **FINAL dan LIVE di VM GLPI produksi**, cek 1–6 disetujui 2026-11-09 · Terakhir diperbarui: 2026-11-09
 >
-> **Perubahan penting di v4.5.0:**
+> **Perubahan penting sejak v4.5.0:**
 > 1. Kartu dashboard **JumpServer Session Sharing** sekarang menghitung **orang yang bergabung ke sesi yang dibagikan**, bukan link share yang dibuat. Angka lama dan baru tidak sebanding.
 > 2. Tanggal pada layar JumpServer sekarang menunjukkan **waktu kejadian**, bukan waktu impor. Riwayat dapat bergeser setelah upgrade karena waktu JumpServer (+0800) dikonversi ke zona GLPI (Asia/Jakarta, +0700); ini perubahan yang benar, bukan kehilangan atau perubahan kejadian.
-> 3. Halaman **Session sharing** kini menampilkan tabel join dan tabel link share secara terpisah. Tombol **Back-fill session joins** di **Setup → Connection** menarik riwayat join lama untuk koneksi yang sedang dipilih.
+> 3. Halaman **Session sharing** kini menampilkan tabel join dan tabel link share secara terpisah. Cron menarik riwayat join satu kali untuk koneksi baru; **Back-fill session joins** di **Setup → Connection** tetap tersedia untuk menarik ulang.
 > 4. Jika database PBI tidak dapat dijangkau, **PBI Insights** menampilkan satu baris abu-abu; KPI di atasnya tetap berasal dari event log plugin dan tetap valid.
+> 5. **User access** memiliki sub-tab **User**, **Group**, dan **Asset**. Laporan High-risk detail juga menghubungkan command ke sesi yang dibagikan, menampilkan joiner dan pemilik sesi, dan membedakan HIGH command dari sesi bersama dengan akses langsung non-admin.
+> 6. Provisioning mengenali Host yang sudah ada di PAMAN, menyediakan pemetaan platform berdasarkan keluarga OS setelah pemetaan OS persis, serta menahan Send bila pemetaan belum lengkap atau Host sudah ada.
+> 7. Manual dapat dibuka dari menu **Manual** plugin atau tombol **Manual** di halaman Setup; halaman menunjukkan versi dokumentasi dan peringatan jika manual lebih lama dari plugin.
 >
-> Sinkronisasi lama Computer → JumpServer (`assetsync`, dulu §5.9) **sudah dihapus total**, diganti provisioning PAMAN yang manual dan butuh persetujuan (§5.9 baru). Semua fitur yang dijelaskan di manual ini sudah terpasang di VM, kecuali yang ditandai tegas sebagai belum.
+> Sinkronisasi lama Computer → JumpServer (`assetsync`, dulu §5.9) **sudah dihapus total**, diganti provisioning PAMAN yang manual dan butuh persetujuan (§5.9 baru). Status verifikasi per fitur dijelaskan di §10; indikator antrean interim **Already in PAMAN** pada jalur tertentu hanya tercakup oleh test, bukan observasi VM.
 
 ---
 
@@ -22,11 +25,11 @@ Fungsi utama:
 |---|---|
 | **Tarik log audit terjadwal** | Setiap jam menarik *operate-logs*, *login-logs* (hanya login gagal), *session-sharings*, dan catatan orang yang bergabung ke sesi. JumpServer tidak punya webhook, jadi semua data diambil dengan *pull*. |
 | **Tarik aktivitas terminal** | Setiap hari menarik record **command** dan **session** terminal JumpServer per bulan, dengan deduplikasi dan retensi (default 13 bulan). Isi *output* command tidak disimpan. |
-| **Evaluasi risiko command** | Setiap 15 menit mengklasifikasi setiap command: high-risk atau tidak, kategori (Account Management, Privilege Escalation, Service Change, Network Security, Destructive, General), serta **Priority** (HIGH / MEDIUM / LOW) dan **Catatan** (Butuh Tindak Lanjut / Aktivitas Admin / Aset Non-Production). Logika diporting dari skrip lama `jumpserver_monthly_audit.py`. |
+| **Evaluasi risiko command** | Setiap 15 menit mengklasifikasi setiap command: high-risk atau tidak, kategori (Account Management, Privilege Escalation, Service Change, Network Security, Destructive, General), serta **Priority** (HIGH / MEDIUM / LOW) dan **Catatan**. Untuk HIGH, catatan membedakan command di sesi bersama dari akses langsung non-admin. |
 | **Korelasi aset & user** | Mencocokkan string aset JumpServer (`NAMA(IP)`) ke Computer / jaringan produksi GLPI, dan user JumpServer (`Nama(login)`) ke User / Group admin GLPI. Hasil bisa di-*override* manual (dengan batasan — lihat §5.3 dan §10). |
 | **[Baru di 3.0.1] Provisioning Computer → PAMAN, dengan persetujuan manusia** | Antrian di halaman *Asset provisioning*: Computer yang layak dikirim ke PAMAN sebagai Host baru menunggu tombol **Send**; tidak ada lagi pengiriman otomatis saat Computer disimpan. Computer yang keluar status aktif ditandai *pending removal* secara otomatis, tetapi penghapusan aktualnya tetap butuh tombol dan nomor tiket yang sudah disetujui. |
 | **[Baru di 3.3.0–3.4.2] Entitlement PAMAN ("Who has access")** | Cron mingguan menarik daftar *asset permission rule* JumpServer dan mencocokkannya ke Computer GLPI — termasuk mesin yang belum pernah disentuh siapa pun, bukan hanya yang punya riwayat sesi. Ditampilkan sebagai sub-tab di tab JumpServer access pada Computer. |
-| **Laporan & dashboard** | Halaman *JumpServer PBI Insights* (sektor sidebar sendiri), halaman *Session sharing* dengan tabel join dan link share, *Activity Log* dengan ekspor CSV/Excel/Print, 5 kartu dashboard GLPI native (kartu Session Sharing menghitung join), tab *Command Audit Report* dengan ekspor CSV/Excel/Print, **[Baru di 3.2.0]** tab *JumpServer access* di form User (sesi & command per orang). |
+| **Laporan & dashboard** | Halaman *JumpServer PBI Insights*, *Session sharing*, *Activity Log*, *Command Audit Report*, dan *User access* dengan sub-tab User/Group/Asset; ekspor tersedia sesuai halaman. Lima kartu dashboard GLPI native (kartu Session Sharing menghitung join) dan tab *JumpServer access* pada form User. |
 
 Kompatibilitas (dari `setup.php`): GLPI 10.0.0 – 11.99.99, wajib ekstensi PHP cURL.
 
@@ -49,6 +52,7 @@ Sektor ini muncul bila Anda punya **READ pada salah satu** dari tiga hak plugin 
 | **Asset & user correlation** | `front/correlation.php` | `plugin_integrasipaman_config` **UPDATE** |
 | **Asset provisioning** [Baru di 3.0.1] | `front/provisioning.php` | `plugin_integrasipaman_provisioning` READ |
 | **Setup** | `front/config.form.php` | `plugin_integrasipaman_config` READ (menyimpan perlu UPDATE) |
+| **Manual** [Baru di 4.15.0; ikon buku setelah Setup] | `front/manual.php` | READ pada salah satu hak `report`, `config`, atau `provisioning` |
 
 Tanpa satu pun dari ketiga hak plugin, **seluruh sektor disembunyikan** — bukan hanya entrinya.
 
@@ -62,6 +66,8 @@ Sampai v2.7.1, "JumpServer access" dan "PAMAN" adalah dua tab terpisah pada form
 |---|---|---|
 | **JumpServer access** | Riwayat sesi & command 30 hari terakhir pada Computer ini, plus sub-tab ketiga **[Baru di 3.3.0–3.4.2] "Who has access"** — lihat §5.10/§5.12 | `plugin_integrasipaman_report` READ |
 | **PAMAN provisioning** [Baru di 3.0.1] | Status provisioning Computer ini di PAMAN, dengan tombol Send/Resend/Remove | `plugin_integrasipaman_provisioning` READ |
+
+Sejak v4.13.1, Computer yang cocok dengan Host dalam daftar PAMAN yang sudah ditarik untuk koneksi tersebut diberi keterangan **already in PAMAN as <nama> (<alamat>)** tanpa tombol Send. Sejak v4.14.0, status pemetaan yang belum lengkap ditampilkan sebagai **Eligible - needs mapping** dan Send tidak tersedia sampai pemetaan dilengkapi.
 
 Tab **PGN Suite** itu sendiri hanya muncul bila ada minimal satu plugin PGN yang punya sesuatu untuk ditampilkan pada Computer tersebut untuk pengguna yang sedang login — jadi seorang pengguna tanpa hak apa pun di kedua baris di atas tidak akan melihat tab PGN Suite sama sekali (kecuali plugin PGN lain menyumbang sub-tabnya sendiri).
 
@@ -85,6 +91,7 @@ Mulai **v3.2.0**, form **User** (bukan Computer) punya tab plugin sendiri bernam
 | URL langsung `…/front/nodemap.php` dan `…/front/platformmap.php` [Baru di 3.0.1] | Daftar pemetaan Computer type → node PAMAN, dan OS → platform PAMAN (mesin pencari GLPI biasa) | `config` READ (tidak ada link menu) |
 | **Home / Dashboard →** *Add widget* → grup **JumpServer Integration** | Kartu dashboard native; klik **JumpServer Session Sharing** untuk membuka halaman Session sharing | Hak plugin `report` READ (tanpa itu kartu tidak muncul di daftar) |
 | **Setup → Connection → Back-fill session joins** | Menarik riwayat join sesi yang lebih lama dari cursor cron untuk koneksi terpilih | Hak plugin `config` UPDATE |
+| **Manual** di menu plugin atau tombol **Manual** di halaman Setup [Baru di 4.15.0] | Membaca panduan penggunaan versi yang terpasang | Hak READ pada salah satu hak plugin `report`, `config`, atau `provisioning` |
 | **Setup → Automatic actions** | 5 automatic action plugin (lihat §6) | Admin GLPI |
 
 Tombol *Configure* di **Setup → Plugins** dan entri **Setup** di sektor sidebar JumpServer Integration mengikuti
@@ -191,17 +198,20 @@ Tiga textarea, satu entri per baris; baris kosong dan baris diawali `#` diabaika
 
 | Label di UI | Kunci config | Default | Arti |
 |---|---|---|---|
-| High-risk keywords | `jumpserver_risk_keywords` | 40 kata kunci dari skrip lama (mis. perintah manajemen akun, sudo, systemctl, rm -rf, iptables, perintah Windows setara) | Command yang **mengandung** salah satu kata kunci (tidak peka huruf besar/kecil), **atau** risk level JumpServer ≥ 4, ditandai high-risk. Spasi tunggal di akhir kata kunci dipertahankan (contoh `su ` agar tidak mengenai `status`). |
-| Fallback: admin users | `jumpserver_admin_users` | Daftar admin PAM dari skrip lama | Format `Nama Lengkap(login)`, harus sama persis dengan string user JumpServer. **Hanya dipakai bila user tidak ter-resolve lewat Group GLPI.** |
-| Fallback: production IP prefixes | `jumpserver_production_ip_prefixes` | Dua prefix segmen produksi dari skrip lama | Aset yang IP-nya diawali prefix ini dianggap produksi. **Hanya dipakai bila aset tidak ter-resolve** lewat range/network GLPI. |
+| High-risk keywords | `jumpserver_risk_keywords` | Kata kunci bawaan plugin | Command yang **mengandung** salah satu kata kunci (tidak peka huruf besar/kecil), **atau** risk level JumpServer ≥ 4, ditandai high-risk. Spasi tunggal di akhir kata kunci dipertahankan. |
+| Fallback: admin users | `jumpserver_admin_users` | Daftar admin yang dikonfigurasi | Format `Nama Lengkap(login)`, harus sama persis dengan string user JumpServer. **Hanya dipakai bila user tidak ter-resolve lewat Group GLPI.** |
+| Fallback: production IP prefixes | `jumpserver_production_ip_prefixes` | Prefix yang dikonfigurasi administrator | Aset yang alamatnya cocok dengan prefix ini dianggap produksi. **Hanya dipakai bila aset tidak ter-resolve** lewat range/network GLPI. |
 
-Aturan Priority/Catatan (hanya untuk command high-risk):
+Aturan Priority/Catatan. Teks catatan untuk dua kondisi HIGH dapat disesuaikan per koneksi di pengaturan evaluasi risiko:
 
 | Kondisi | Priority | Catatan |
 |---|---|---|
 | Aset bukan produksi | LOW | Aset Non-Production |
 | Aset produksi, user admin | MEDIUM | Aktivitas Admin |
-| Aset produksi, user bukan admin | HIGH | Butuh Tindak Lanjut |
+| Aset produksi, user bukan admin, command diketik oleh joiner saat bergabung ke sesi milik user lain | HIGH | `Shared session` (default) |
+| Aset produksi, user bukan admin, selain kondisi di atas—termasuk command pemilik sesi | HIGH | `Akses Langsung Non-Admin` (default) |
+
+Catatan **Shared session** berarti join masih aktif ketika command dijalankan. Catatan **Akses Langsung Non-Admin** menunjukkan akses yang perlu diperiksa terhadap kebijakan: kemungkinan grant yang keliru, user yang belum dikenali sebagai admin, atau data join yang belum ditarik. Join baru memicu evaluasi ulang command HIGH pada sesi terkait.
 
 Kategori ditentukan oleh peta tetap di kode (bukan config): Account Management, Privilege Escalation, Service Change, Network Security, Destructive; selain itu **General**.
 
@@ -211,8 +221,8 @@ Resolver berjalan di awal cron *Classify JumpServer command records* dan setiap 
 
 | Label di UI | Kunci config | Default | Arti |
 |---|---|---|---|
-| Asset match mode | `correlation_match_mode` | `ip_only` | **IP only** — uji IP yang di-parse dari string aset. **Computer name only** — uji IP milik Computer GLPI yang cocok. **Hybrid** — IP hasil parse dulu, lalu IP Computer yang cocok. **Hybrid (nama dulu)** (`hybrid_name`) — cari Computer GLPI dengan nama yang sama dulu; kalau tidak ada Computer bernama itu, jatuh kembali ke IP hasil parse. Nama yang berbeda di JumpServer dan GLPI tidak merugikan, karena pencocokan otomatis jatuh ke IP. *(Mode yang aktif di GLPI-SERVER per 2026-09-27.)* |
-| Production IP ranges (Tools > IP Addressing) | `correlation_production_addressings` | kosong | Hanya muncul bila plugin **addressing** aktif. Pilih range IP produksi; aset yang IP-nya di dalam range = produksi. **Sumber yang direkomendasikan** (di VM: range produksi IT dan OT). |
+| Asset match mode | `correlation_match_mode` | `ip_only` | **IP only** — uji alamat yang di-parse dari string aset. **Computer name only** — uji Computer GLPI yang cocok berdasarkan nama. **Hybrid** — alamat hasil parse dulu, lalu Computer yang cocok. **Hybrid (nama dulu)** (`hybrid_name`) — cari Computer GLPI dengan nama yang sama dulu; bila tidak ada, jatuh kembali ke alamat hasil parse. |
+| Production IP ranges (Tools > IP Addressing) | `correlation_production_addressings` | kosong | Hanya muncul bila plugin **addressing** aktif. Pilih range IP produksi; aset dengan alamat di dalam range dianggap produksi. Gunakan range yang ditetapkan administrator jaringan. |
 | Production networks (core IPNetwork) | `correlation_production_ipnetworks` | kosong | Alternatif: jaringan core GLPI. Biarkan kosong bila memakai range IP Addressing (IPNetwork core sering terisi otomatis oleh inventory). |
 | Admin groups | `correlation_admin_groups` | kosong | User GLPI yang menjadi **anggota langsung** grup terpilih dianggap admin resmi. Sub-grup tidak ikut — pilih tiap grup secara eksplisit. |
 | *(tersembunyi)* | `correlation_maps_generation` | `0` | Penghitung internal; naik otomatis bila vonis produksi/admin berubah. Tidak diubah manual. |
@@ -231,10 +241,11 @@ Menentukan Computer GLPI mana yang **layak** masuk antrian PAMAN (§5.9). Filter
 | Eligible statuses | `provisioning_eligible_states` | Status Computer yang layak. Kosong = semua status layak. |
 | Dispose statuses | `provisioning_dispose_states` | Computer yang mencapai salah satu status ini (atau dihapus di GLPI) otomatis ditandai **pending removal** di antrian — penandaan otomatis, penghapusan aktualnya tetap manual dan butuh tiket (§5.9). |
 | Eligible entities | `provisioning_eligible_entities` | Entitas yang layak. Kosong = semua entitas (termasuk Root Entity). |
-| Eligible IP prefixes | `provisioning_ip_prefixes` | Satu prefix per baris (mis. `10.0.0.`). Kosong = semua alamat diterima. |
+| Eligible IP prefixes | `provisioning_ip_prefixes` | Satu prefix per baris. Kosong = semua alamat diterima. |
 | Approval ticket statuses | `provisioning_ticket_statuses` | Default **Solved, Closed** (id 5, 6). Status tiket yang dianggap sebagai persetujuan untuk menghapus aset dari PAMAN — tiket yang masih dikerjakan bukan persetujuan. |
+| Platforms by OS family | `provisioning_platform_families` | Default: aturan Linux dan Windows (keyword OS bawaan). Satu baris per aturan: `Platform: keyword, keyword`. Aturan bawaan mencakup kata kunci keluarga Linux (mis. linux, ubuntu, debian) dan Windows. Jika pemetaan OS persis tidak ada, aturan pertama dengan keyword yang ditemukan dalam nama OS (tidak peka huruf besar/kecil) dipakai. Platform dicari berdasarkan nama di PAMAN. Kubernetes/SKE tidak disertakan karena merupakan aset Cloud di PAMAN, sedangkan provisioning ini membuat Host. Pastikan nama platform dan kebijakan untuk Windows sesuai lingkungan sebelum mengaktifkan aturan. |
 
-Node PAMAN (per Computer type) dan platform PAMAN (per Operating System) dipetakan di dua daftar terpisah, dibuka lewat URL langsung (§2.4): `front/nodemap.php` dan `front/platformmap.php` — daftar pencarian GLPI biasa, bisa difilter/diurutkan/diekspor. Baris dengan id sumber 0 adalah baris default: yang dipakai untuk Computer type atau OS yang belum Anda petakan secara eksplisit. Computer yang node/platform-nya belum dipetakan tetap muncul di antrian dengan alasan tertulis dan kotak centang nonaktif — bukan error, hanya belum lengkap.
+Node PAMAN (per Computer type) dan platform PAMAN (per Operating System) dipetakan di dua daftar terpisah, dibuka lewat URL langsung (§2.4): `front/nodemap.php` dan `front/platformmap.php`. Daftar dapat dicari, difilter, diurutkan, dan diekspor; tombol **Add** tersedia untuk membuat pemetaan. Baris dengan id sumber 0 adalah pemetaan default. Pemetaan platform per keluarga OS dicoba setelah pemetaan OS persis. OS Computer dibaca dari relasi sistem operasi GLPI. Jika node atau platform belum dapat ditentukan, antrean menampilkan **Eligible - needs mapping**, Send dinonaktifkan, dan tautan ke halaman pemetaan tersedia; status simpanan antrean tidak berubah.
 
 ---
 
@@ -293,10 +304,12 @@ Nilai *Resolved by*:
 
 ### 5.5 Backfill satu bulan data terminal
 
-1. Buka `…/plugins/integrasipaman/front/backfill.php` (tanpa parameter) untuk melihat rentang bulan yang diizinkan (berdasarkan retensi).
-2. Buka `…/front/backfill.php?month=YYYY-MM`.
-3. Hasil berupa tabel Commands/Sessions: *Fetched, Inserted, Skipped, Empty-id, Null-date, Complete, OK*. Data yang sudah ada dilewati (dedup).
+1. Buka **Setup → Terminal Audit → Backfill a month**.
+2. Pilih bulan dari daftar yang tersedia. Bulan yang berada di luar jendela retensi tidak ditawarkan.
+3. Hasil berupa tabel Commands/Sessions: *Fetched, Inserted, Skipped, Empty-id, Null-date, Complete, OK*. Data yang sudah ada dilewati, jadi menjalankan bulan yang sama lagi tidak menggandakan data.
 4. Bulan dengan volume besar dapat melampaui batas waktu web (~490 detik). Untuk tarikan berat gunakan jalur CLI (§8.4).
+
+Riwayat session join untuk koneksi baru ditarik otomatis satu kali oleh cron. Untuk menarik ulang setelah data dibersihkan, pilih koneksi di **Setup → Connection** lalu klik **Back-fill session joins**. Tindakan ini aman diulang dan hanya berlaku untuk koneksi terpilih (§5.14).
 
 ### 5.6 Melihat PBI Insights
 
@@ -335,12 +348,17 @@ Status yang mungkin dimiliki satu baris antrian:
 | Pending removal | Computer sudah keluar status aktif (atau dihapus di GLPI) — ditandai otomatis, menunggu penghapusan bertiket |
 | Removed | Sudah dihapus dari PAMAN — status akhir, baris tetap disimpan sebagai jejak audit |
 | Failed | Percobaan terakhir gagal; selalu bisa dicoba ulang |
+| Already in PAMAN | Indikator tampilan (bukan status simpanan antrean) untuk Computer yang identitasnya cocok dengan Host dalam daftar PAMAN yang sudah ditarik untuk koneksi tersebut; tidak dapat dikirim ulang sebagai Host baru |
+
+Baris yang belum memiliki pemetaan node/platform menampilkan **Eligible - needs mapping**. Ini keterangan tampilan; nilai status simpanan antrean tidak berubah. Send tetap dinonaktifkan sampai pemetaan dilengkapi.
+
+Pemeriksaan Host yang sudah ada menggunakan alamat atau nama (tidak peka huruf besar/kecil); alamat menjadi penentu bila nama dan alamat menunjuk hasil berbeda. Daftar Host harus sudah ditarik untuk koneksi/entity yang sesuai. Computer yang cocok ditandai **already in PAMAN** di tabnya dan tidak mendapat tombol Send. Pemeriksaan dilakukan sebelum langkah pemetaan atau pengiriman; plugin tidak mengadopsi Host yang sudah ada dengan mengubah node/platform-nya.
 
 **Mengirim / mengirim ulang (hak CREATE):**
-1. Buka **Asset provisioning**, pilih tab status *Eligible*, *Drift*, atau *Failed* (hanya status ini yang menawarkan Send/Resend — *Provisioned* tidak, karena tidak ada transisi provisioned → provisioned).
-2. Centang baris yang dituju (baris dengan node/platform belum terpetakan kotak centangnya nonaktif — lengkapi dulu §4.6), klik **Send selected**.
-3. Muncul halaman konfirmasi berisi node & platform tujuan setiap aset — mengirim beberapa Host baru ke bastion produksi sengaja dibuat dua langkah. Klik **Confirm** untuk lanjut, atau **Cancel**.
-4. Hasil ditampilkan satu baris per aset (bukan ringkasan total), termasuk aset yang di-*adopt* (sudah ada di PAMAN, GLPI hanya menautkan id-nya).
+1. Buka **Asset provisioning**, pilih tab status *Eligible*, *Drift*, atau *Failed* (hanya status ini yang menawarkan Send/Resend — *Provisioned* tidak, karena tidak ada transisi provisioned → provisioned). Baris **Already in PAMAN** tidak dapat dipilih.
+2. Pilih baris yang dituju lalu klik **Send selected**. Jika pemetaan belum lengkap, lengkapi dari tautan **Node mapping** atau **Platform mapping** yang tersedia (§4.6).
+3. Muncul halaman konfirmasi berisi node & platform tujuan setiap aset. Klik **Confirm** untuk lanjut, atau **Cancel**.
+4. Hasil ditampilkan satu baris per aset. Host yang sudah ada di PAMAN tidak diadopsi atau diubah oleh proses Send.
 5. Alamat yang dikirim dipilih deterministik dari seluruh IPv4 network port Computer (alamat loopback/APIPA dibuang), bukan sekadar baris pertama.
 
 **Menghapus (hak PURGE):**
@@ -358,9 +376,12 @@ Kegagalan (koneksi PAMAN, node/platform belum lengkap, dsb.) tidak pernah mengga
 4. **[Baru di 2.3.0]** Keenam laporan berada dalam **satu kartu bertab**, urutannya: *Evaluation summary* (Priority/Catatan/Jumlah, high-risk saja), *Commands per user*, *Commands per asset*, *High-risk by category*, *Top commands* (maks. 100), dan *High-risk detail* paling akhir. Sebelumnya keenamnya bertumpuk ke bawah sepanjang kira-kira enam layar.
 5. **[Baru di 2.2.0]** Tiap laporan dipaginasi: kartu ringkasan **15 baris** per halaman, *High-risk detail* **25** baris (sebelumnya 100). Tab yang sedang terbuka ikut tersimpan di URL (`?rtab=`), jadi **menekan Previous/Next atau mengurutkan kolom tidak melemparkan Anda kembali ke tab pertama**.
 6. **[Baru di 2.2.0]** Di *Commands per asset* dan *High-risk detail*, nama aset yang sudah ter-korelasi menjadi **tautan ke Computer GLPI**-nya. Aset yang belum ter-korelasi tetap teks biasa, begitu pula aset yang Computer-nya sudah dihapus.
-7. Setiap laporan punya tombol **CSV**, **Excel**, **Print**. **Ekspor selalu mencakup seluruh periode, bukan hanya halaman yang tampil** — paginasi hanya berlaku di tampilan.
-8. **Full command log → Download CSV**: seluruh command dalam periode (CSV saja).
-9. Nama file: `<YYYYMMDD_YYYYMMDD>_<NAMA_LAPORAN>.csv`. Laporan detail (high-risk dan command log) dibatasi maks. 366 hari. Nilai sel yang diawali `=`, `+`, `-`, `@` diberi awalan `'` untuk mencegah formula injection di Excel.
+7. **[Baru di 4.12.0]** *High-risk detail* memiliki kolom **JoinedBy** (siapa yang sedang bergabung saat command dijalankan) dan **SharedBy** (pemilik sesi yang dibagikan). Keduanya ikut dalam ekspor. Filter **Sessions that were shared** mencakup command high-risk dari sesi yang pernah memiliki join, termasuk command yang terjadi sebelum atau sesudah masa join.
+8. **[Baru di 4.12.0]** Sub-tab **Who joined** di halaman Session sharing memiliki kolom **High-risk** yang menghitung command high-risk selama join aktif. Angkanya membuka *High-risk detail* yang difilter ke sesi itu; ekspor CSV juga menyertakan jumlah tersebut.
+9. **[Baru di 4.13.0]** Catatan command HIGH membedakan `Shared session` dari `Akses Langsung Non-Admin` (§4.4). Join yang baru ditarik memicu evaluasi ulang command HIGH dalam sesi terkait.
+10. Setiap laporan punya tombol **CSV**, **Excel**, **Print**. **Ekspor selalu mencakup seluruh periode, bukan hanya halaman yang tampil** — paginasi hanya berlaku di tampilan.
+11. **Full command log → Download CSV**: seluruh command dalam periode (CSV saja).
+12. Nama file: `<YYYYMMDD_YYYYMMDD>_<NAMA_LAPORAN>.csv`. Laporan detail (high-risk dan command log) dibatasi maks. 366 hari. Nilai sel yang diawali `=`, `+`, `-`, `@` diberi awalan `'` untuk mencegah formula injection di Excel.
 
 ### 5.11 [Baru di 3.2.0] Melihat riwayat akses seorang user: tab JumpServer access di form User
 
@@ -382,15 +403,15 @@ Berbeda dari riwayat sesi (§2.2, sub-tab JumpServer access), sub-tab ini menjaw
 ### 5.13 [Baru di 4.5.0] Melihat aktivitas Session sharing
 
 1. Dari kartu **JumpServer Session Sharing** pada dashboard, buka halaman **Session sharing**.
-2. Tabel **Who joined a shared session** di bagian atas menunjukkan siapa yang bergabung, alamat asal, metode (misalnya Web Terminal), waktu masuk/keluar, dan hasilnya. Join yang ditolak ditandai **Refused**; arahkan kursor ke status untuk melihat alasannya.
-3. Tabel **Share links created** di bawahnya tetap menampilkan link yang dibuat. Tabel join dan tabel link share memiliki tombol ekspor **CSV** masing-masing.
+2. Tabel **Who joined a shared session** di bagian atas menunjukkan siapa yang bergabung, alamat asal, metode, waktu masuk/keluar, dan hasilnya. Join yang ditolak ditandai **Refused**; arahkan kursor ke status untuk melihat alasannya. Kolom **High-risk** menghitung command high-risk selama join aktif; klik jumlahnya untuk membuka laporan yang difilter ke sesi tersebut.
+3. Tabel **Share links created** di bawahnya tetap menampilkan link yang dibuat. Tabel join dan tabel link share memiliki tombol ekspor **CSV** masing-masing; ekspor join menyertakan kolom **High-risk commands**.
 4. Tanggal yang terlihat adalah waktu kejadian JumpServer yang sudah dikonversi ke zona waktu GLPI, bukan waktu data diimpor.
 
 ### 5.14 [Baru di 4.5.0] Menarik riwayat join lama
 
 1. Pilih koneksi yang ingin diisi pada **Setup → Connection**.
-2. Klik **Back-fill session joins** untuk mengambil riwayat join yang lebih lama dari cursor cron. Proses ini memerlukan hak **Configuration — Update**.
-3. Hasilnya berlaku untuk koneksi yang sedang dipilih. Setiap koneksi baru perlu di-back-fill secara terpisah; tarikan cron biasa tidak otomatis mengambil riwayat yang sudah lebih lama dari cursor.
+2. Untuk koneksi baru, cron otomatis menarik riwayat join satu kali. Klik **Back-fill session joins** untuk menarik ulang riwayat setelah data dibersihkan atau bila diperlukan; tindakan ini memerlukan hak **Configuration — Update**.
+3. Hasilnya berlaku hanya untuk koneksi yang sedang dipilih. Riwayat yang lebih lama dari cursor tidak ditarik oleh cron reguler.
 4. Aman dijalankan ulang: catatan yang sudah tersimpan dilewati dan tidak diduplikasi. Jika proses melaporkan hasil parsial, jalankan lagi sampai selesai.
 
 ### 5.15 [Baru di 4.11.0; diperbarui di 4.11.1] Melihat akses JumpServer per User, Group, atau Asset
@@ -425,11 +446,11 @@ Kelimanya terdaftar dengan mode **CLI (external)**, sehingga membutuhkan system 
 
 | Nama crontask (Setup → Automatic actions) | Frekuensi | Apa yang dilakukan |
 |---|---|---|
-| `pull_historical_logs` (item `PluginIntegrasipamanCron`) — *Pull historical audit logs from the JumpServer REST API* | Setiap jam | Menarik operate-logs, login-logs (gagal saja), session-sharings, dan session-join-records sesuai cursor koneksi. Dedup per ID event JumpServer. Untuk riwayat join yang lebih lama dari cursor, jalankan **Back-fill session joins** per koneksi (§5.14). Dilewati bila URL/Access Key belum diisi. |
+| `pull_historical_logs` (item `PluginIntegrasipamanCron`) — *Pull historical audit logs from the JumpServer REST API* | Setiap jam | Menarik operate-logs, login-logs (gagal saja), session-sharings, dan session-join-records sesuai cursor koneksi. Dedup per ID event JumpServer. Untuk koneksi baru, cron otomatis menarik riwayat join satu kali; untuk menarik ulang atau mengambil data yang dibersihkan, jalankan **Back-fill session joins** per koneksi (§5.14). Dilewati bila URL/Access Key belum diisi. |
 | `pull_terminal_activity` (item `PluginIntegrasipamanTerminalPull`) — *Pull JumpServer terminal command & session records, then prune past the retention window* | Harian | Menarik command & session untuk bulan lalu dan bulan berjalan, plus setiap bulan dalam jendela backfill yang masih kosong (self-healing). Lalu menghapus data yang melewati retensi. Dilewati bila Command Storage ID belum diisi. Log run menandai bulan `FETCH FAILED` atau `INCOMPLETE`. |
 | `evaluate_commands` (item `PluginIntegrasipamanRiskEval`) — *Classify JumpServer command records (high-risk, category, priority) into the command-eval table* | Setiap 15 menit | 1) Menjalankan resolver korelasi aset/user; 2) mengevaluasi command yang baru atau yang aturannya berubah (maks. ~120 detik per run; sisanya dilanjutkan run berikutnya). Selalu dilaporkan sukses. |
 | `provisioning_scan` (item `PluginIntegrasipamanCron`) — *Refresh the PAMAN provisioning queue: eligibility, drift, and assets marked for removal* [Baru di 3.0.1] | Harian | Menyapu seluruh Computer di GLPI (termasuk yang dihapus, untuk menandai *pending removal*) dan menghitung ulang baris antrian: menambah yang baru layak, menghapus yang tidak lagi layak dan belum pernah dikirim, menandai *drift* bila data berubah, menandai *pending removal* bila Computer keluar status aktif. **Tidak pernah menghubungi PAMAN** — cron ini hanya menyiapkan pekerjaan untuk manusia. |
-| `entitlement_pull` (item `PluginIntegrasipamanEntitlement`) — *Collect JumpServer asset permissions (who may reach which asset)* [Baru di 3.3.0; diperluas di 4.11.0] | Mingguan | Menarik seluruh *asset permission rule* JumpServer beserta anggotanya (user/grup), lalu mencocokkan setiap Computer yang namanya/alamatnya cocok dengan host JumpServer (bukan hanya yang punya riwayat command) ke rule yang menjangkaunya. Sejak 4.11.0, run juga menarik semua user JumpServer beserta system role-nya, meminta daftar rule yang menjangkau setiap host JumpServer, lalu membangun ulang data sub-tab User dan Group. Kegagalan pada salah satu langkah baru dicatat di log dan tidak menghentikan run. Di VM satu run sekitar **7 menit 15 detik**; frekuensi tetap mingguan. Dibatasi 700 Computer per run (§10); yang belum sempat diproses didahulukan pada run berikutnya (paling lama belum diperbarui, lalu yang belum pernah sama sekali). Kegagalan pada satu Computer tidak menghapus cache lamanya. |
+| `entitlement_pull` (item `PluginIntegrasipamanEntitlement`) — *Collect JumpServer asset permissions (who may reach which asset)* [Baru di 3.3.0; diperluas di 4.11.0] | Mingguan | Menarik seluruh *asset permission rule* JumpServer beserta anggotanya (user/grup), lalu mencocokkan setiap Computer yang namanya/alamatnya cocok dengan host JumpServer (bukan hanya yang punya riwayat command) ke rule yang menjangkaunya. Sejak 4.11.0, run juga menarik semua user JumpServer beserta system role-nya, meminta daftar rule yang menjangkau setiap host JumpServer, lalu membangun ulang data sub-tab User dan Group. Kegagalan pada salah satu langkah baru dicatat di log dan tidak menghentikan run. Pada verifikasi deployment, satu run memerlukan sekitar **7 menit 15 detik**. Dibatasi 700 Computer per run (§10); yang belum sempat diproses didahulukan pada run berikutnya (paling lama belum diperbarui, lalu yang belum pernah sama sekali). Kegagalan pada satu Computer tidak menghapus cache lamanya. |
 
 ---
 
@@ -442,7 +463,7 @@ Kelimanya terdaftar dengan mode **CLI (external)**, sehingga membutuhkan system 
 | JumpServer → GLPI | `/api/v1/audits/operate-logs/`, `/api/v1/audits/login-logs/`, `/api/v1/terminal/session-sharings/` | cron `pull_historical_logs` |
 | JumpServer → GLPI | `/api/v1/terminal/session-join-records/` | cron `pull_historical_logs`; riwayat sebelum cursor melalui **Back-fill session joins** |
 | JumpServer → GLPI | `/api/v1/terminal/commands/`, `/api/v1/terminal/sessions/` | cron `pull_terminal_activity`, halaman backfill |
-| GLPI → JumpServer | `/api/v1/assets/hosts/` (POST saat Computer dibuat, PUT saat diubah) | hook `item_add` / `item_update` Computer |
+| GLPI → JumpServer | API Host PAMAN | Hanya saat operator secara manual mengonfirmasi **Send**, **Resend**, atau **Remove** pada antrian provisioning (§5.9); menyimpan Computer di GLPI tidak mengirimnya |
 
 Semua request memakai Access Key (HTTP Signature) dan header organisasi dari konfigurasi.
 
@@ -465,17 +486,17 @@ Plugin tidak menulis ke tabel plugin lain.
 
 ### 8.1 Paket
 
-- Zip bernama `integrasipamanv<versi>.zip` (terbaru: `integrasipamanv4.5.0.zip`), root arsip = folder `integrasipaman/`, folder `tests/` dan `docs/` tidak disertakan.
+- Zip bernama `integrasipamanv<versi>.zip` (terbaru: `integrasipamanv4.15.0.zip`), root arsip = folder `integrasipaman/`. Paket 4.15.0 menyertakan `docs/manual.md` untuk menu Manual; folder `tests/` tidak disertakan.
 - Tujuan di server: `/data/www/glpi/plugins/integrasipaman`.
 
 ### 8.2 Instalasi baru
 
-1. Upload zip ke GLPI-SERVER (melalui file transfer JumpServer).
+1. Upload zip ke VM GLPI tujuan melalui jalur transfer yang disetujui administrator.
 2. Ekstrak di `/data/www/glpi/plugins/`, lalu `sudo chown -R nginx:nginx /data/www/glpi/plugins/integrasipaman`.
 3. Jalankan:
    - `sudo -u nginx php /data/www/glpi/bin/console plugin:install integrasipaman --force`
    - `sudo -u nginx php /data/www/glpi/bin/console plugin:activate integrasipaman`
-4. Instalasi membuat tabel `glpi_plugin_jumpserver_logs`, `_commands`, `_sessions`, `_command_eval`, `_assetmap`, `_usermap`, mendaftarkan 3 automatic action, membuat hak `plugin_integrasipaman_config`, dan mengisi nilai default config.
+4. Instalasi membuat tabel data plugin, mendaftarkan lima automatic action, membuat hak `plugin_integrasipaman_config`, dan mengisi nilai default config.
 5. Beri hak ke profil yang perlu di **Administration → Profiles → JumpServer Integration** (§3).
 6. Isi konfigurasi (§5.1).
 
@@ -488,15 +509,15 @@ Plugin tidak menulis ke tabel plugin lain.
 5. Upgrade bersifat aman: tabel dibuat hanya bila belum ada, kolom lama dimigrasi di tempat, dan config yang sudah diisi admin **tidak ditimpa** (hanya kunci baru yang ditambahkan).
 6. Cek `/data/www/glpi/files/_log/php-errors.log` dan `sql-errors.log`.
 7. **Logout lalu login lagi** — menu sidebar di-cache di session, jadi entri menu tidak berubah sebelum sesi baru.
-8. Setelah upgrade, jalankan **Setup → Connection → Back-fill session joins** untuk setiap koneksi yang perlu riwayat join sebelum cursor-nya. Cron tidak mengisi otomatis riwayat lama itu (§5.14).
+8. Untuk koneksi baru, cron menarik riwayat join satu kali. Bila data join perlu dipulihkan atau ditarik ulang, gunakan **Setup → Connection → Back-fill session joins** untuk koneksi terkait (§5.14).
 
-> **Perbaikan skema yang tidak terlihat operator (v3.2.0, v3.4.1).** v3.2.0 memperbaiki dua kolom `*_id` yang seharusnya UNSIGNED, dan v3.4.1 memastikan kolom tanggal pada tabel entitlement (`permrules.date_start`/`date_expired`) tetap TIMESTAMP, bukan DATETIME — GLPI 11 menghitung kolom DATETIME pada tabel plugin sebagai peringatan skema permanen di Setup, dan `migration:timestamps` bawaan GLPI justru mengubahnya balik ke TIMESTAMP setiap kali dijalankan, yang tanpa perbaikan ini akan mematikan cron `entitlement_pull` lagi (JumpServer menulis tahun 2123 untuk "tidak pernah kedaluwarsa", dan TIMESTAMP mentok di 2038 — lihat §8.3 di bawah dan §10). Tidak ada langkah operator untuk ini; sebutkan di sini semata agar peringatan Setup yang hilang tidak bikin bingung.
+> **Perbaikan skema yang tidak terlihat operator (v3.2.0, v3.4.1).** v3.2.0 memperbaiki dua kolom `*_id` yang seharusnya UNSIGNED, dan v3.4.1 memastikan kolom tanggal pada tabel entitlement (`permrules.date_start`/`date_expired`) tetap TIMESTAMP, bukan DATETIME. GLPI 11 dapat menampilkan peringatan skema untuk kolom DATETIME pada tabel plugin; perubahan ini juga menjaga cron entitlement tetap berjalan untuk tanggal berakhir yang jauh di masa depan (§10). Tidak ada langkah operator untuk perbaikan ini.
 
 > **Segera setelah naik ke v3.4.2, jangan kaget melihat entitlement bernilai 0.** Pembersihan cache satu-kali dari migrasi v3.4.1 (lihat di atas) juga mereset jadwal cron `entitlement_pull`, sehingga `glpi_plugin_jumpserver_permrules` dan `glpi_plugin_jumpserver_assetperms` sempat terbaca **0 baris** tepat setelah upgrade — itu normal, bukan kegagalan. Begitu automatic action berikutnya jalan (menit berikutnya bila system cron aktif), keduanya terisi ulang dan sub-tab **Who has access** (§5.12) kembali menunjukkan data.
 
 > **Khusus upgrade ke v2.0.0 (perubahan hak akses).** Sebelum upgrade, catat profil mana saja yang punya core `config` UPDATE:
 > `SELECT p.id, p.name FROM glpi_profilerights pr JOIN glpi_profiles p ON p.id = pr.profiles_id WHERE pr.name = 'config' AND (pr.rights & 2);`
-> Setelah upgrade, profil-profil itu harus muncul dengan Read + Update tercentang di tab **JumpServer Integration**. Installer menulis ke `glpi_profilerights`, jadi ambil backup DB dulu. Checklist verifikasi lengkap ada di repo plugin: `docs/v2.7.1-deploy-checklist.md`.
+> Setelah upgrade, profil-profil itu harus muncul dengan Read + Update tercentang di tab **JumpServer Integration**. Installer menulis ke `glpi_profilerights`, jadi ambil backup DB dulu.
 
 > **Jangan Uninstall untuk upgrade.** Uninstall tidak menghapus tabel data, tetapi **menghapus seluruh nilai konfigurasi** (termasuk Access Key dan password DB PBI) dan mendaftarkan ulang cron. Setelah reinstall, run pertama menarik ulang seluruh riwayat dan dedup melewati data yang sudah ada.
 
@@ -541,49 +562,26 @@ Batas waktu request web ~490 detik. Backfill besar, run pertama `pull_terminal_a
 
 ## 10. Status & batasan
 
-**Status versi**
-- **LIVE di GLPI-SERVER: v4.5.0**, diverifikasi 2026-10-21. Versi ini menarik session joins, mengubah arti kartu dashboard **JumpServer Session Sharing** dari link yang dibuat menjadi jumlah join, menampilkan tabel join dan share link terpisah dengan ekspor CSV masing-masing, memakai waktu kejadian JumpServer (dikonversi ke zona GLPI) pada layar, dan menambahkan back-fill join per koneksi. Saat migrasi, tanggal historis berubah dari waktu impor ke waktu kejadian; pergeseran itu diharapkan (§5.8, §5.13–§5.14).
-- **v3.4.2 dan sebelumnya adalah riwayat.** v3.4.2 pernah diverifikasi di produksi pada 2026-09-27; gunakan v4.5.0 di atas sebagai status versi dan VM terkini.
-- **v3.0.1** (24-09) menghapus sinkronisasi Computer→JumpServer lama dan menggantinya provisioning PAMAN bertiket-manusia (§5.9), memindahkan dua tab Computer plugin ini ke dalam tab bersama **PGN Suite** (§2.2), dan menambah hak `plugin_integrasipaman_provisioning`. **v3.0.0** dan **v3.1.0** digabung dan ditutup — isinya terbawa ke v3.0.1, jangan dipasang keduanya (seeding hak provisioning-nya salah — lihat catatan di bawah).
-- **v3.2.0** (24-09) menambah tab **JumpServer access** pada form User (§2.3, §5.11) dan memperbaiki dua kolom skema yang membuat Setup → General menampilkan peringatan (§8.3); diverifikasi di data nyata di VM.
-- Sebelum v3.0.1: **v2.7.1** (23-09) sempat LIVE — menambahkan kotak pencarian dan pemilih kolom pada tabel high-risk. v2.6.0, v2.6.1, v2.5.0, v2.4.0, v2.3.0, dan v2.1.0 juga sempat LIVE sebelum digantikan versi berikutnya; v2.0.0, v2.0.1, v2.2.0, v2.2.1 dibangun tapi tidak pernah dideploy.
-- ⚠️ **v2.6.0 tidak boleh dipasang sendirian** (mode pencocokan korelasi baru tidak bisa disimpan) — sudah tidak relevan karena versi produksi sekarang jauh di atasnya, tetap dicatat sebagai riwayat.
-- **PAM Audit Dashboard** (ide terpisah): **ditangguhkan** sejak 2026-09-13; tidak ada kodenya di plugin.
+### Status versi dan verifikasi
 
-**Keputusan 2026-09-14 — sudah diimplementasikan & terverifikasi**
-- ✅ Hak khusus **`plugin_integrasipaman_config`** dengan tab di Administration → Profiles, di-*seed* dari mask `config` tiap profil saat upgrade (§3).
-- ✅ Bergabung ke tab bersama **PGN Suite** di Setup → General; halaman konfigurasi mandiri tetap ada untuk admin tanpa core `config`.
-- ✅ Sektor sidebar sendiri, sejajar `riskregister` / `drillreport` (§2).
+- **v4.15.0 FINAL dan LIVE di VM GLPI produksi**, disetujui melalui cek 1–6 pada 2026-11-09. Rilis ini menambahkan halaman Manual dari menu plugin dan tombol di Setup; versi manual ditampilkan, dengan peringatan bila dokumentasi lebih lama dari versi plugin.
+- **v4.14.0**: cek 1–9 disetujui di VM pada 2026-11-09, termasuk pemetaan platform keluarga OS dan penolakan Send untuk Host yang sudah ada. Tampilan interim baris antrean **Already in PAMAN** tanpa checkbox (cek 10) tidak teramati di VM karena baris sudah terhapus pada scan; jalur tersebut diverifikasi melalui test saja.
+- **v4.13.1** mengenali Host yang sudah ada berdasarkan alamat atau nama (tidak peka huruf besar/kecil), menggunakan daftar Host yang telah ditarik untuk koneksi terkait. Bila alamat dan nama menghasilkan kecocokan berbeda, alamat menjadi penentu.
+- **v4.13.0** membedakan HIGH command `Shared session` dari `Akses Langsung Non-Admin`; join baru memicu evaluasi ulang. **v4.12.0** menambahkan informasi joiner dan pemilik sesi pada High-risk detail serta jumlah command high-risk per join.
+- **v4.11.0–4.11.1** menambahkan laporan akses User/Group/Asset dan memperbaiki pembersihan entitlement lama; **v4.5.1** menambahkan pemilih bulan untuk backfill terminal dan tarikan otomatis satu kali untuk riwayat join koneksi baru.
+- Perubahan waktu dari waktu impor ke waktu kejadian pada rilis v4.5.0 membuat tanggal historis dapat bergeser setelah upgrade; itu perubahan yang diharapkan, bukan kehilangan kejadian (§5.7, §5.13–§5.14).
 
-**Keputusan 2026-09-24 — "Super-Admin selalu penuh" berlaku juga untuk provisioning**
-- ✅ Profil dengan core `config` UPDATE selalu direset ke Configuration Read+Update, Reports Read, **dan Asset provisioning Read+Send+Remove** setiap `plugin:install --force` — termasuk hak yang menulis ke bastion produksi (§3). Ini keputusan sadar pengguna, bukan default plugin (plugin ini sendiri berargumen sebaliknya saat diusulkan).
+### Batasan dan hal yang perlu diperhatikan
 
-**Belum diverifikasi / diketahui rapuh**
-- **Belum ada bukti tertulis bahwa "Send" ke PAMAN pernah benar-benar sukses terhadap PAMAN produksi yang sesungguhnya** dari antrian provisioning v3.0.1 ini — periksa `PROJECT-LOG.md` untuk status terkini sebelum mengandalkan tombol Send pada aset yang kritikal. Bila belum terbukti, anggap payload dan tanda tangan permintaannya belum sepenuhnya terverifikasi terhadap PAMAN live.
-- **Kapasitas cron `entitlement_pull` pas-pasan.** `BATCH_LIMIT` = 700 Computer per run, sementara estate saat ini mencocokkan 681 Computer (margin ~3%). Kalau estate melewati 700, sebagian Computer akan menua tanpa diperbarui, dan setelah 14 hari **setiap** sub-tab Who has access menampilkan peringatan basi permanen.
-- **Satu baris data yang buruk dari JumpServer masih bisa menghentikan seluruh cron entitlement** di tengah jalan — lihat catatan cron.log/php-errors.log di §9.
-
-**Batasan yang diketahui**
-- **Dua Computer GLPI yang berbagi satu alamat IP bisa membuat resolver otomatis menautkan aset ke Computer yang salah** — resolver berbasis IP memilih id Computer terkecil tanpa memeriksa apakah nama aset cocok (§9). Di v4.5.0, koreksi manual tersedia di *Asset mappings* (§5.3); membersihkan duplikasi IP di GLPI juga memperbaiki hasil otomatis. Mode "Computer name only" hanya membantu bila nama di JumpServer dan di GLPI konsisten, dan pada instance ini keduanya sering berbeda secara sistematis.
-- Access Key Secret dan password DB PBI disimpan tanpa enkripsi di `glpi_configs` (enkripsi ditunda).
-- Cron `pull_terminal_activity` tidak dapat menandai "gagal" pada gangguan JumpServer total (residual yang diketahui, self-healing di run berikutnya).
-- Session-sharings tidak punya filter tanggal di API JumpServer, sehingga setiap run jam-an menarik ulang seluruh daftar (dedup mencegah duplikat).
-- Endpoint session-join-records juga mengabaikan filter tanggal di API; plugin menerapkan batas waktu di sisi GLPI. Cron hanya menarik data setelah cursor koneksi, jadi riwayat yang lebih tua perlu diambil manual melalui **Back-fill session joins** untuk setiap koneksi.
-- Isi output command tidak disimpan; teks command panjang dipotong di batas kolom.
-- Kategori risiko ditentukan kode (tidak bisa diedit dari UI); hanya daftar keyword/admin/prefix yang dapat dikonfigurasi.
-- Grup admin tidak mewarisi sub-grup.
-- Tidak ada perintah CLI khusus plugin untuk backfill; backfill manual hanya via halaman web (terbatas ~490 detik) atau via cron CLI.
-- Integrasi ke riskregister (command HIGH → Finding) masih rencana.
-- Uninstall menghapus seluruh konfigurasi (tabel data tetap).
-- Grup pada entitlement ("Who has access") tidak diperluas ke anggotanya satu-satu, hanya jumlah anggota — "aset mana yang bisa dijangkau user tertentu melalui grup" belum bisa dijawab dari sisi user.
-
-**Temuan terkonfirmasi di produksi (2026-09-21): JumpServer mengabaikan `date_from`**
-
-Dari seluruh endpoint yang ditarik plugin ini, hanya `/api/v1/terminal/commands/` yang **mendokumentasikan** `date_from`/`date_to`. Untuk `/terminal/sessions/`, `/audits/operate-logs/`, dan `/audits/login-logs/`, JumpServer menerima parameter itu, membalas HTTP 200, lalu **mengabaikannya** — terbukti dari baris log cron `returned N row(s) outside the requested window`.
-
-Artinya, sebelum v2.0.1:
-- tarikan per jam tidak pernah benar-benar inkremental di ketiga endpoint itu;
-- backfill "satu bulan" tidak pernah terbatas satu bulan;
-- tidak terlihat sama sekali di data, karena dedup membuang pengulangannya.
-
-**Isi tabel tetap benar** — sejak v2.0.1 setiap baris disaring ulang di sisi klien terhadap periode yang diminta. Yang tersisa adalah **biaya transfer**. Langkah lanjutan (belum dikerjakan): baca angka N dan M di baris log itu untuk mengukur besarnya, lalu pindah ke filter `days`/`days__lt` yang terdokumentasi bila perlu.
+- Aturan platform per keluarga OS dicoba setelah pemetaan OS persis. Konfigurasi Windows harus disesuaikan dengan nama platform PAMAN yang tersedia dan kebijakan lingkungan; jangan mengasumsikan nama platform tertentu.
+- Pemeriksaan **Already in PAMAN** bergantung pada daftar Host yang sudah ditarik untuk koneksi/entity yang tepat. Pastikan entitlement telah dikumpulkan sebelum mengandalkan hasil pencocokan; baris yang sudah tampil **Already in PAMAN** tidak dapat dikirim.
+- Host yang node atau platform-nya belum dapat ditentukan belum bisa dikirim. Lengkapi pemetaan dahulu; **Eligible - needs mapping** adalah keterangan tampilan, bukan status antrean baru.
+- Kapasitas `entitlement_pull` dibatasi 700 Computer per run. Computer yang belum diproses menunggu run berikutnya; data entitlement yang belum berhasil diperbarui dapat menjadi basi dan memunculkan peringatan setelah 14 hari.
+- Kesalahan pada satu baris data JumpServer dapat menghentikan satu run entitlement. Jika automatic action tampak berhasil tetapi data tidak berubah, periksa log cron dan PHP di §9.
+- Dua Computer GLPI yang berbagi alamat dapat menyebabkan resolver otomatis memilih Computer yang tidak diharapkan. Periksa dan perbaiki *Asset mappings* secara manual (§5.3).
+- Access Key Secret dan password DB PBI disimpan tanpa enkripsi di `glpi_configs`. Jangan menyalin nilainya ke tiket, chat, atau dokumen.
+- Jika endpoint JumpServer mengabaikan filter tanggal, plugin menyaring ulang data di sisi GLPI. Ini menjaga isi tabel sesuai periode yang diminta, tetapi dapat meningkatkan volume transfer.
+- Isi output command tidak disimpan; teks command panjang dapat dipotong. Kategori risiko ditentukan kode, sementara keyword, fallback admin, dan prefix produksi dapat dikonfigurasi.
+- Grup admin tidak mewarisi sub-grup. Data entitlement untuk grup menampilkan jumlah anggota, bukan rincian akses per anggota pada tab aset.
+- Backfill lewat web dibatasi waktu request. Untuk tarikan besar atau evaluasi ulang banyak baris, gunakan cron CLI sesuai §8.4.
+- Integrasi otomatis command HIGH menjadi `Finding` di Risk Register belum tersedia. Uninstall menghapus konfigurasi plugin, sementara tabel data tetap dipertahankan.

@@ -27,8 +27,12 @@ check(is_file($M::path()), 'docs/manual.md is shipped in the plugin tree (so it 
 check($M::versionOf("# T\n\n> Versi didokumentasikan: 4.5.0 (tag `v4.5.0`) · Status VM") === '4.5.0', 'reads "Versi didokumentasikan: x.y.z"');
 check($M::versionOf("> Version documented: 4.13.1\n") === '4.13.1', 'reads the English line too');
 check($M::versionOf("# no version here") === '', 'no version line: empty');
+check($M::versionOf("> Versi didokumentasikan: **4.15.0** (tag `v4.15.0`)") === '4.15.0', 'reads a bold version (the 4.15.0 manual header)');
+check($M::versionOf((string) file_get_contents($M::path())) !== '', 'the shipped manual has a readable version line');
 check($M::lags('4.5.0', '4.15.0') === true && $M::lags('4.15.0', '4.15.0-rc1') === false && $M::lags('', '4.15.0') === false,
     'lags(): an older manual lags; the same release (rc or final) does not; unknown is not claimed');
+check($M::lags('4.15.0', '4.15.1-rc1') === false && $M::lags('4.15.0', '4.15.3') === false && $M::lags('4.15.0', '4.16.0') === true && $M::lags('4.9.0', '4.15.0') === true,
+    'lags() ignores the patch level (v4.15.1): a 4.15.0 manual is current for 4.15.x, not for 4.16.0');
 
 // --- rendering ------------------------------------------------------------------
 check($M::CONVERTER_OPTIONS === ['html_input' => 'escape', 'allow_unsafe_links' => false],

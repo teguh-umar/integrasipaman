@@ -46,20 +46,24 @@ class PluginIntegrasipamanManual
      */
     public static function versionOf(string $markdown): string
     {
-        return preg_match('/(?:Versi didokumentasikan|Version documented)\s*:\s*v?(\d+(?:\.\d+){1,2})/i', $markdown, $m) === 1
+        return preg_match('/(?:Versi didokumentasikan|Version documented)\s*:\s*[*_`]*v?(\d+(?:\.\d+){1,2})/i', $markdown, $m) === 1
             ? $m[1]
             : '';
     }
 
-    /** True when the manual documents an older release than the plugin installed (rc suffix ignored). */
+    /**
+     * True when the manual documents an older minor release than the plugin
+     * installed. The rc suffix and the patch level are ignored (v4.15.1): a
+     * patch changes no screen, so a 4.15.0 manual is current for 4.15.x.
+     */
     public static function lags(string $manual_version, string $plugin_version): bool
     {
         if ($manual_version === '') {
             return false;
         }
-        $base = (string) preg_replace('/-.*$/', '', $plugin_version);
+        $minor = static fn(string $v): string => implode('.', array_slice(explode('.', (string) preg_replace('/-.*$/', '', $v)), 0, 2));
 
-        return version_compare($manual_version, $base, '<');
+        return version_compare($minor($manual_version), $minor($plugin_version), '<');
     }
 
     /** Markdown to safe HTML. Without commonmark (never on GLPI 11), the text is shown escaped. */

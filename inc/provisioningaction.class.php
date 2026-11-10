@@ -257,6 +257,22 @@ class PluginIntegrasipamanProvisioningAction
             return ['ok' => false, 'message' => $message];
         }
 
+        // v4.14.0: a first Send for a host PAMAN already holds (pulled host
+        // list) is refused, before any mapping or network step. Adopting it
+        // would PATCH node/platform onto a host somebody built by hand. The
+        // row is left as it is; the next scan drops it.
+        if (!$is_resend) {
+            $existing = $P::existingHost((string) ($fields['name'] ?? ''), $address);
+            if ($existing !== null) {
+                return ['ok' => false, 'message' => sprintf(
+                    PluginIntegrasipamanServerLabel::in(__('%1$s is already in {server} as %2$s (%3$s); not sent again', 'integrasipaman')),
+                    (string) ($fields['name'] ?? ''),
+                    (string) $existing['name'],
+                    (string) $existing['address']
+                )];
+            }
+        }
+
         // Step 2: resolve node/platform now, not from anything the page
         // passed, so a mapping fixed since the page loaded is honoured.
         $node_lookup     = PluginIntegrasipamanNodeMap::asLookup();

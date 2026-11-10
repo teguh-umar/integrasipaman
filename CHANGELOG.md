@@ -11,6 +11,18 @@ Author: ICT.
 This changelog starts at 4.11.0. For earlier releases, see the release's deploy checklist in the source repository
 (`docs/vX.Y.Z-deploy-checklist.md`) and its git tag.
 
+## [4.14.0] — 2026-11-09
+
+### Added
+- **Platform by OS family.** New per-connection setting in Setup > Asset provisioning: one line per platform, `Platform: keyword, keyword`. When an OS has no exact platform mapping, the first line with a keyword the OS name contains (case-insensitive) decides, and the platform is looked up by name in PAMAN. The exact mapping still wins; a rule naming a platform PAMAN does not have refuses the Send with that reason. Default: `Linux: linux, ubuntu, debian, centos, red hat, rocky, alma, openeuler, oracle` and `Windows: windows`. Kubernetes/SKE are left out on purpose: in PAMAN they are Cloud assets, and provisioning only creates Hosts.
+
+- **Map first, then send.** An Eligible Computer whose node or platform cannot be resolved reads `Eligible - needs mapping` on its tab and in the queue; its Send is disabled and both places link to the Node and Platform mapping pages. Display only: the stored status does not change.
+- **The Node and Platform mapping pages have an Add button.** GLPI draws its `+ Add` from the menu entry, and these pages sit under Asset provisioning, which declares none; no page linked to the add forms, so a mapping could not be created from the UI.
+
+### Fixed
+- **The queue and Send also know an asset is already in PAMAN.** An Eligible row made before 4.13.1 stayed in the queue with a live checkbox until the next scan, although its tab already said "already in PAMAN". The queue now shows it as `Already in PAMAN` with no checkbox, and a first Send of a host PAMAN already holds is refused before any mapping or network step. It used to adopt the host and PATCH node/platform onto it.
+- **The OS is read from `glpi_items_operatingsystems`.** The plugin read `operatingsystems_id` off the Computer, a column GLPI no longer has, so the per-OS platform mapping never matched and the message read `OS is not mapped` with no name. A Computer with no OS now says so. A provisioned row whose platform now resolves differently from what was sent turns Drift.
+
 ## [4.13.1] — 2026-11-07
 
 ### Fixed

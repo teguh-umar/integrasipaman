@@ -269,6 +269,29 @@ class PluginIntegrasipamanProvisioning extends CommonDBTM
         return self::matchExisting($name, $address, $hosts);
     }
 
+    /**
+     * Every pulled PAMAN host of the CURRENT connection, for a page that
+     * checks many Computers at once (the queue) - one query, then
+     * matchExisting() per row.
+     *
+     * @return list<array{jms_id:string,name:string,address:string}>
+     */
+    public static function hostsOfCurrent(): array
+    {
+        global $DB;
+
+        $hosts = [];
+        foreach ($DB->request([
+            'SELECT' => ['jms_id', 'name', 'address'],
+            'FROM'   => self::HOSTS_TABLE,
+            'WHERE'  => PluginIntegrasipamanConnection::ownRows(),
+        ]) as $host) {
+            $hosts[] = $host;
+        }
+
+        return $hosts;
+    }
+
     /** existingHost() as the connection that serves the Computer's entity. */
     private static function existingHostFor(Computer $item, string $address): ?array
     {
@@ -315,13 +338,45 @@ class PluginIntegrasipamanProvisioning extends CommonDBTM
      * @param array<int, array{id:int, label:string}>    $platform_lookup
      * @return array{node_id:string, node_label:string, platform_id:int, platform_label:string, blocked:string}
      */
-    public static function resolveTargets(array $computer, array $node_lookup, array $platform_lookup): array
-    {
+    public static function resolveTargets(
+        array $computer,
+        array $node_lookup,
+        array $platform_lookup,
+        ?array $families = null,
+        ?array $platforms = null
+    ): array {
         $type_id = (int) ($computer['computertypes_id'] ?? 0);
         $os_id   = (int) ($computer['operatingsystems_id'] ?? 0);
+        $os_name = trim((string) ($computer['os_name'] ?? ''));
+        // v4.14.0: GLPI keeps a Computer's OS in glpi_items_operatingsystems;
+        // glpi_computers has no operatingsystems_id, so the callers' value was
+        // always 0 and the per-OS mapping could never match.
+        if ($os_id <= 0 && (int) ($computer['id'] ?? 0) > 0) {
+            $os      = self::osFor((int) $computer['id']);
+            $os_id   = $os['id'];
+            $os_name = $os['name'] !== '' ? $os['name'] : $os_name;
+        }
 
-        $node     = $node_lookup[$type_id]   ?? $node_lookup[0]   ?? null;
-        $platform = $platform_lookup[$os_id] ?? $platform_lookup[0] ?? null;
+        $node     = $node_lookup[$type_id] ?? $node_lookup[0] ?? null;
+        // v4.14.0: the exact per-OS mapping, then the family rules, then the
+        // catch-all [0] mapping. Rules and the PAMAN platform list are loaded
+        // here when the caller did not pass them, and the list only when a
+        // rule actually matched - most Sends never need the network for it.
+        $platform = $platform_lookup[$os_id] ?? null;
+        $family   = null;
+        if ($platform === null && $os_name !== '') {
+            $families = $families ?? self::familiesFromConfig();
+            if ($platforms === null && self::matchFamily($os_name, $families, []) !== null) {
+                $platforms = self::platformList();
+            }
+            $family = self::matchFamily($os_name, $families, $platforms ?? []);
+            if ($family !== null && $family['platform_id'] > 0) {
+                $platform = ['id' => $family['platform_id'], 'label' => $family['label']];
+            }
+        }
+        if ($platform === null && $family === null) {
+            $platform = $platform_lookup[0] ?? null;
+        }
 
         $node_id     = trim((string) ($node['id'] ?? ''));
         $platform_id = (int) ($platform['id'] ?? 0);
@@ -336,10 +391,21 @@ class PluginIntegrasipamanProvisioning extends CommonDBTM
         }
 
         if ($platform_id <= 0) {
-            $blocked[] = sprintf(
-                PluginIntegrasipamanServerLabel::in(__('OS %s is not mapped to a {server} platform', 'integrasipaman')),
-                (string) ($computer['os_name'] ?? '#' . $os_id)
-            );
+            if ($family !== null) {
+                $blocked[] = sprintf(
+                    PluginIntegrasipamanServerLabel::in(__('OS %1$s matches the family rule "%2$s", but {server} has no platform named %3$s', 'integrasipaman')),
+                    $os_name,
+                    $family['keyword'],
+                    $family['label']
+                );
+            } elseif ($os_name === '' && $os_id <= 0) {
+                $blocked[] = __('The Computer has no operating system in GLPI', 'integrasipaman');
+            } else {
+                $blocked[] = sprintf(
+                    PluginIntegrasipamanServerLabel::in(__('OS %s is not mapped to a {server} platform', 'integrasipaman')),
+                    $os_name !== '' ? $os_name : '#' . $os_id
+                );
+            }
         }
 
         return [
@@ -349,6 +415,113 @@ class PluginIntegrasipamanProvisioning extends CommonDBTM
             'platform_label' => (string) ($platform['label'] ?? ''),
             'blocked'        => implode('; ', $blocked),
         ];
+    }
+
+    /**
+     * Family rules (v4.14.0), one per line: "Platform: keyword, keyword".
+     * Blank lines, "#" comments, lines without ":" and empty keywords are
+     * dropped; line order is kept, because the first match wins.
+     *
+     * @return list<array{platform:string, keywords:list<string>}>
+     */
+    public static function parseFamilies(string $raw): array
+    {
+        $out = [];
+        foreach (preg_split('/\R/', $raw) ?: [] as $line) {
+            $line = trim($line);
+            if ($line === '' || $line[0] === '#' || !str_contains($line, ':')) {
+                continue;
+            }
+            [$platform, $words] = array_map('trim', explode(':', $line, 2));
+            $keywords = array_values(array_filter(
+                array_map(static fn ($w) => mb_strtolower(trim($w)), explode(',', $words)),
+                static fn ($w) => $w !== ''
+            ));
+            if ($platform !== '' && $keywords !== []) {
+                $out[] = ['platform' => $platform, 'keywords' => $keywords];
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * The platform an OS name falls to under the family rules: the first line
+     * with a keyword the name contains, case-insensitive. The platform is
+     * found by NAME in $platforms (id => name); a rule naming a platform
+     * PAMAN does not have still matches, with platform_id 0, so the Send is
+     * refused with that reason instead of falling through to a guess.
+     *
+     * @param list<array{platform:string, keywords:list<string>}> $rules
+     * @param array<int, string> $platforms
+     * @return array{platform_id:int, label:string, keyword:string}|null
+     */
+    public static function matchFamily(string $os_name, array $rules, array $platforms): ?array
+    {
+        $os = mb_strtolower(trim($os_name));
+        if ($os === '') {
+            return null;
+        }
+        foreach ($rules as $rule) {
+            foreach ($rule['keywords'] as $keyword) {
+                if (str_contains($os, $keyword)) {
+                    $id = 0;
+                    foreach ($platforms as $pid => $pname) {
+                        if (mb_strtolower(trim((string) $pname)) === mb_strtolower($rule['platform'])) {
+                            $id = (int) $pid;
+                            break;
+                        }
+                    }
+                    return ['platform_id' => $id, 'label' => $rule['platform'], 'keyword' => $keyword];
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * A Computer's operating system, from glpi_items_operatingsystems (the
+     * first row; GLPI allows several). ['id' => 0, 'name' => ''] for none.
+     *
+     * @return array{id:int, name:string}
+     */
+    public static function osFor(int $computers_id): array
+    {
+        global $DB;
+
+        foreach ($DB->request([
+            'SELECT'    => ['io.operatingsystems_id', 'os.name'],
+            'FROM'      => 'glpi_items_operatingsystems AS io',
+            'LEFT JOIN' => ['glpi_operatingsystems AS os' => ['ON' => ['os' => 'id', 'io' => 'operatingsystems_id']]],
+            'WHERE'     => ['io.itemtype' => 'Computer', 'io.items_id' => $computers_id, 'io.operatingsystems_id' => ['>', 0]],
+            'ORDER'     => 'io.id ASC',
+            'LIMIT'     => 1,
+        ]) as $row) {
+            return ['id' => (int) $row['operatingsystems_id'], 'name' => trim((string) ($row['name'] ?? ''))];
+        }
+
+        return ['id' => 0, 'name' => ''];
+    }
+
+    /** The family rules of the current connection. */
+    private static function familiesFromConfig(): array
+    {
+        // Both autoloaded in GLPI; absent only in a standalone test.
+        if (!class_exists('PluginIntegrasipamanRuleSettings') || !class_exists('PluginIntegrasipamanConfig')) {
+            return [];
+        }
+        $config = PluginIntegrasipamanRuleSettings::forConnection(PluginIntegrasipamanConnection::current());
+
+        return self::parseFamilies((string) ($config['provisioning_platform_families'] ?? ''));
+    }
+
+    /** PAMAN's platforms (id => name) for the current connection, cached by PamanLists. */
+    private static function platformList(): array
+    {
+        require_once __DIR__ . '/pamanlists.class.php';
+
+        return PluginIntegrasipamanPamanLists::platforms();
     }
 
     public static function getTable($classname = null)
@@ -977,7 +1150,7 @@ class PluginIntegrasipamanProvisioning extends CommonDBTM
 
         echo '<table class="table">';
         echo '<tr><th>' . htmlescape(__('Status', 'integrasipaman')) . '</th><td>'
-            . htmlescape($status_labels[$status] ?? $status) . '</td></tr>';
+            . htmlescape(isset($status_labels[$status]) ? self::statusLabel($status, $targets['blocked']) : $status) . '</td></tr>';
 
         if ($targets['blocked'] !== '') {
             echo '<tr><th>' . htmlescape(__('Node / platform', 'integrasipaman')) . '</th>'
@@ -1011,7 +1184,40 @@ class PluginIntegrasipamanProvisioning extends CommonDBTM
 
         echo '</table>';
 
-        self::renderButtons((int) $row->fields['id'], $status);
+        self::renderButtons((int) $row->fields['id'], $status, $targets['blocked']);
+    }
+
+    /**
+     * The tab's status wording (v4.14.0). "Eligible" promises a Send that
+     * works, so an Eligible row whose node or platform cannot be resolved
+     * reads "Eligible - needs mapping". Display only; the stored status is
+     * unchanged.
+     */
+    public static function statusLabel(string $status, string $blocked): string
+    {
+        $labels = [
+            self::STATUS_ELIGIBLE        => __('Eligible', 'integrasipaman'),
+            self::STATUS_PROVISIONED     => __('Provisioned', 'integrasipaman'),
+            self::STATUS_DRIFT           => __('Drift', 'integrasipaman'),
+            self::STATUS_PENDING_REMOVAL => __('Pending removal', 'integrasipaman'),
+            self::STATUS_REMOVED         => __('Removed', 'integrasipaman'),
+            self::STATUS_FAILED          => __('Failed', 'integrasipaman'),
+        ];
+        if ($status === self::STATUS_ELIGIBLE && $blocked !== '') {
+            return __('Eligible - needs mapping', 'integrasipaman');
+        }
+
+        return $labels[$status] ?? $status;
+    }
+
+    /** Links to the two mapping pages, for a row that cannot be sent until they are filled. */
+    public static function mappingLinks(): string
+    {
+        $base = Plugin::getWebDir('integrasipaman') . '/front/';
+
+        return '<a href="' . htmlescape($base . 'nodemap.php') . '">' . htmlescape(__('Node mapping', 'integrasipaman')) . '</a>'
+            . ' &middot; '
+            . '<a href="' . htmlescape($base . 'platformmap.php') . '">' . htmlescape(__('Platform mapping', 'integrasipaman')) . '</a>';
     }
 
     /**
@@ -1024,7 +1230,7 @@ class PluginIntegrasipamanProvisioning extends CommonDBTM
      * validation, the confirmation step for sends - already lives there;
      * this tab does not reimplement any of it.
      */
-    private static function renderButtons(int $row_id, string $status): void
+    private static function renderButtons(int $row_id, string $status, string $blocked = ''): void
     {
         $can_send   = Session::haveRight(PluginIntegrasipamanProfile::RIGHT_PROVISIONING, CREATE);
         $can_remove = Session::haveRight(PluginIntegrasipamanProfile::RIGHT_PROVISIONING, PURGE);
@@ -1041,7 +1247,14 @@ class PluginIntegrasipamanProvisioning extends CommonDBTM
 
         echo '<div class="d-flex gap-2 mt-2">';
 
-        if ($can_send && in_array($status, $sendable, true)) {
+        if ($can_send && in_array($status, $sendable, true) && $blocked !== '') {
+            // v4.14.0: map first, then send. A Send that can only fail on the
+            // confirm page is not offered.
+            $label = $status === self::STATUS_ELIGIBLE ? __('Send', 'integrasipaman') : __('Resend', 'integrasipaman');
+            echo '<button type="button" class="btn btn-primary" disabled title="' . htmlescape($blocked) . '">'
+                . htmlescape($label) . '</button>';
+            echo '<span class="align-self-center small">' . self::mappingLinks() . '</span>';
+        } elseif ($can_send && in_array($status, $sendable, true)) {
             $label = $status === self::STATUS_ELIGIBLE
                 ? __('Send', 'integrasipaman')
                 : __('Resend', 'integrasipaman');

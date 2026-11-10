@@ -95,6 +95,26 @@ function jumpserver_provisioning_lookups(array $row_fields): array
 }
 
 /**
+ * v4.14.0. The PAMAN host a queue row's Computer already is, judged against
+ * the host list of the row's own connection (loaded once per connection).
+ *
+ * @param array<string,mixed> $row_fields
+ */
+function jumpserver_provisioning_existing(array $row_fields, string $name, string $address): ?array
+{
+    static $hosts = [];
+
+    $id = (int) ($row_fields[PluginIntegrasipamanConnection::FK] ?? 0);
+    if (!isset($hosts[$id])) {
+        $read       = static fn (): array => PluginIntegrasipamanProvisioning::hostsOfCurrent();
+        $connection = PluginIntegrasipamanConnection::byId($id);
+        $hosts[$id] = $connection === null ? $read() : PluginIntegrasipamanConnection::using($connection, $read);
+    }
+
+    return PluginIntegrasipamanProvisioning::matchExisting($name, $address, $hosts[$id]);
+}
+
+/**
  * @param list<int> $ids
  * @return list<array{id:int, name:string, node_label:string, platform_label:string, blocked:string}>
  */
@@ -419,6 +439,22 @@ foreach ($rows as $row) {
             : __('The GLPI Computer behind this row no longer exists', 'integrasipaman'))
         : $targets['blocked'];
 
+    // v4.14.0: an unsent Eligible row whose Computer PAMAN already holds - a
+    // row made before 4.13.1, until the next scan drops it. Never sendable.
+    $existing = null;
+    if ($has_computer && $row['status'] === PluginIntegrasipamanProvisioning::STATUS_ELIGIBLE
+        && trim((string) ($row['jumpserver_asset_id'] ?? '')) === ''
+    ) {
+        $existing = jumpserver_provisioning_existing($row, (string) ($computer_fields['name'] ?? ''), $address);
+    }
+    if ($existing !== null) {
+        $blocked_reason = sprintf(
+            PluginIntegrasipamanServerLabel::in(__('Already in {server} as %1$s (%2$s); not sent again', 'integrasipaman')),
+            (string) $existing['name'],
+            (string) $existing['address']
+        );
+    }
+
     echo '<tr>';
 
     if ($show_checkbox) {
@@ -444,10 +480,17 @@ foreach ($rows as $row) {
         echo '<td>' . htmlescape($targets['node_label'] !== '' ? $targets['node_label'] : (string) $row['node_label']) . '</td>';
         echo '<td>' . htmlescape($targets['platform_label'] !== '' ? $targets['platform_label'] : (string) $row['platform_label']) . '</td>';
     } else {
-        echo '<td colspan="2" class="text-warning">' . htmlescape($blocked_reason) . '</td>';
+        echo '<td colspan="2" class="text-warning">' . htmlescape($blocked_reason)
+            . ($has_computer && $existing === null ? '<div class="small">' . PluginIntegrasipamanProvisioning::mappingLinks() . '</div>' : '')
+            . '</td>';
     }
 
-    echo '<td>' . htmlescape((string) ($tab_labels[$row['status']] ?? $row['status'])) . '</td>';
+    // v4.14.0: an Eligible row that cannot be sent says so.
+    echo '<td>' . htmlescape($existing !== null
+        ? PluginIntegrasipamanServerLabel::in(__('Already in {server}', 'integrasipaman'))
+        : (isset($tab_labels[$row['status']])
+            ? PluginIntegrasipamanProvisioning::statusLabel((string) $row['status'], $blocked_reason)
+            : (string) $row['status'])) . '</td>';
 
     if ($tab === $P::STATUS_DRIFT) {
         $changes = [];

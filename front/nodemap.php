@@ -27,6 +27,14 @@ Html::header(
 );
 \GlpiPlugin\Pgnsuite\Menu::renderSubNav('integrasipaman', 'provisioning');
 
+// v4.14.0: GLPI draws "+ Add" from the menu entry, and this page sits under
+// "provisioning", which declares none - so the list had no way to add a row.
+if (PluginIntegrasipamanNodeMap::canCreate()) {
+    echo '<div class="mb-2"><a class="btn btn-primary" href="'
+        . htmlescape(Plugin::getWebDir('integrasipaman') . '/front/nodemap.form.php') . '">'
+        . '<i class="ti ti-plus"></i> ' . htmlescape(__('Add a node mapping', 'integrasipaman')) . '</a></div>';
+}
+
 Search::show('PluginIntegrasipamanNodeMap');
 
 Html::footer();

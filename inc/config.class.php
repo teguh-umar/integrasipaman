@@ -171,6 +171,10 @@ class PluginIntegrasipamanConfig extends CommonDBTM
         'provisioning_dispose_states'     => '',
         'provisioning_eligible_entities'  => '',
         'provisioning_ip_prefixes'        => '',
+        // v4.14.0: OS -> platform by family, after the exact per-OS mapping.
+        // Kubernetes / SKE are absent on purpose: in PAMAN those are Cloud
+        // assets, and provisioning only creates Hosts.
+        'provisioning_platform_families'  => "Linux: linux, ubuntu, debian, centos, red hat, rocky, alma, openeuler, oracle\nWindows: windows",
         // Ticket statuses that count as an approval for removing an asset
         // from PAMAN. 5 = Solved, 6 = Closed in core GLPI.
         'provisioning_ticket_statuses'    => '5,6',
@@ -913,6 +917,13 @@ class PluginIntegrasipamanConfig extends CommonDBTM
         echo '<textarea class="form-control" id="provisioning_ip_prefixes" name="provisioning_ip_prefixes" rows="3" spellcheck="false">'
             . htmlescape($config_values['provisioning_ip_prefixes']) . '</textarea>';
         echo '<small class="form-hint">' . htmlescape(__('One prefix per line, e.g. 10.0.0. - a Computer whose address starts with any of them passes. Leave empty to accept any address.', 'integrasipaman')) . '</small>';
+        echo '</div>';
+
+        echo '<div class="col-12">';
+        echo '<label class="form-label" for="provisioning_platform_families">' . __('Platform by OS family', 'integrasipaman') . '</label>';
+        echo '<textarea class="form-control" id="provisioning_platform_families" name="provisioning_platform_families" rows="4" spellcheck="false">'
+            . htmlescape($config_values['provisioning_platform_families']) . '</textarea>';
+        echo '<small class="form-hint">' . htmlescape(PluginIntegrasipamanServerLabel::in(__('One per line, "Platform: keyword, keyword". Used when an OS has no exact platform mapping: the first line with a keyword the OS name contains wins (case-insensitive), and the platform is looked up by name in {server}. An exact mapping always wins. Kubernetes clusters are Cloud assets in {server}, not Hosts, so leave them out.', 'integrasipaman'))) . '</small>';
         echo '</div>';
 
         self::closeSection();

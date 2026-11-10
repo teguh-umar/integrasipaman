@@ -13,6 +13,7 @@ $fails = 0;
 function check($cond, $msg) { global $fails; echo ($cond ? "PASS " : "FAIL ") . $msg . "\n"; if (!$cond) $fails++; }
 
 define('GLPI_ROOT', __DIR__);
+if (!function_exists('mb_strtolower')) { function mb_strtolower($s, $e = null) { return strtolower((string) $s); } }
 
 // The messages name the server by the label derived from this URL (v3.10.0).
 class Config

@@ -73,5 +73,26 @@ check(str_contains($rn[0] ?? '', 'self::existingHostFor('), 'the tab without a q
 preg_match('/private static function renderRow\(.*?\n    \}/s', $src, $rr);
 check(str_contains($rr[0] ?? '', 'self::existingHostFor('), 'the tab with an old eligible row hides Send when the asset already exists');
 
+// --- v4.14.0-rc5 (VM, 2026-11-07): the queue and the Send path too -------
+// An Eligible row made before 4.13.1 stays until the next refresh/scan. Its
+// tab already said "already in PAMAN", but the queue still listed it Eligible
+// with a live checkbox, and a bulk Send would have adopted the hand-made host
+// and PATCHed its node/platform. Both now ask the same question.
+$queue = file_get_contents(__DIR__ . '/../front/provisioning.php');
+check(str_contains($queue, 'jumpserver_provisioning_existing('), 'the queue page checks each unsent row against the pulled host list');
+check(preg_match('/if \(\$existing !== null\).*?Already in/s', $queue) === 1, 'such a row reads "Already in PAMAN as ..." and gets no checkbox');
+$action = file_get_contents(__DIR__ . '/../inc/provisioningaction.class.php');
+preg_match('/private static function doSend\(.*?\n    \}/s', $action, $ds);
+$body = $ds[0] ?? '';
+$posExisting = strpos($body, '::existingHost(');
+$posTargets  = strpos($body, '::resolveTargets(');
+check($posExisting !== false && $posTargets !== false && $posExisting < $posTargets,
+    'doSend refuses a host PAMAN already holds, before any mapping or network step');
+check(preg_match('/if \(!\$is_resend\) \{\s*\$existing = \$P::existingHost\(/', $body) === 1,'only a first Send is refused; a Resend of our own host is not');
+
+// hostsMatching(): the queue loads the host list once per connection.
+$all = [['jms_id' => 'h-1', 'name' => 'VM-APP-07', 'address' => '10.0.0.157']];
+check(($P::matchExisting('VM-APP-07', '', $all)['jms_id'] ?? null) === 'h-1', 'matchExisting works on a preloaded list');
+
 echo $fails === 0 ? "ALL PASS\n" : "$fails FAILURE(S)\n";
 exit($fails === 0 ? 0 : 1);

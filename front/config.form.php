@@ -117,6 +117,7 @@ if (isset($_POST['update'])) {
         static fn ($n) => $n >= 0
     ))));
     $provisioning_ip_prefixes     = trim($_POST['provisioning_ip_prefixes'] ?? '');
+    $provisioning_platform_families = trim((string) ($_POST['provisioning_platform_families'] ?? ''));
     $provisioning_ticket_statuses = implode(',', array_values(array_unique(array_filter(
         array_map('intval', (array) ($_POST['provisioning_ticket_statuses'] ?? [])),
         static fn ($n) => $n > 0
@@ -155,6 +156,7 @@ if (isset($_POST['update'])) {
         'provisioning_dispose_states'    => $provisioning_dispose_states,
         'provisioning_eligible_entities' => $provisioning_eligible_entities,
         'provisioning_ip_prefixes'       => $provisioning_ip_prefixes,
+        'provisioning_platform_families' => $provisioning_platform_families,
         'provisioning_ticket_statuses'   => $provisioning_ticket_statuses,
     ];
 
@@ -179,6 +181,10 @@ if (isset($_POST['update'])) {
     }
     if (!array_key_exists('jumpserver_direct_access_note', $_POST)) {
         unset($rule_values['jumpserver_direct_access_note']);
+    }
+    // v4.14.0, same reasoning: an old tab must not blank the family rules.
+    if (!array_key_exists('provisioning_platform_families', $_POST)) {
+        unset($rule_values['provisioning_platform_families']);
     }
 
     // v4.4.0: the form for the defaults every connection inherits. There is no

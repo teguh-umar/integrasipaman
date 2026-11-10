@@ -72,6 +72,7 @@ class PluginIntegrasipamanRuleSettings
             'provisioning_dispose_states',
             'provisioning_eligible_entities',
             'provisioning_ip_prefixes',
+            'provisioning_platform_families',
             'provisioning_ticket_statuses',
         ],
     ];

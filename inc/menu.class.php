@@ -185,6 +185,17 @@ class PluginIntegrasipamanMenu extends CommonGLPI
             ];
         }
 
+        // v4.15.0 (suite rule 2026-11-09): the user manual, for anyone who may
+        // see the plugin at all - the same gate front/manual.php checks.
+        if (self::canView()) {
+            $options['manual'] = [
+                'title' => __('Manual', 'integrasipaman'),
+                'page'  => self::BASE . '/manual.php',
+                'icon'  => 'ti ti-book',
+                'links' => ['search' => self::BASE . '/manual.php'],
+            ];
+        }
+
         // canView() passes on any of three rights, while each page above has
         // its own gate. If a combination ever opens none of them: no page,
         // no entry - not a warning on reset()'s false (code review, 4.0.0).

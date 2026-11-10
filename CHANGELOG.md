@@ -11,6 +11,11 @@ Author: ICT.
 This changelog starts at 4.11.0. For earlier releases, see the release's deploy checklist in the source repository
 (`docs/vX.Y.Z-deploy-checklist.md`) and its git tag.
 
+## [4.15.0] — 2026-11-09
+
+### Added
+- **User manual inside the plugin** (suite rule, 2026-11-09). A **Manual** entry in the plugin menu and a **Manual** button on the Setup page open `front/manual.php`. It renders `docs/manual.md` (copied at build from the suite's `docs/manual/integrasipaman.md`) with GLPI's league/commonmark, with raw HTML escaped and unsafe links dropped. The page shows the manual's version and warns when it documents an older release than the one installed. A missing file shows a notice.
+
 ## [4.14.0] — 2026-11-09
 
 ### Added

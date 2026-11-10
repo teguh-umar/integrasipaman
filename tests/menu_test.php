@@ -79,7 +79,7 @@ check(!method_exists($M, 'getMenuContent'),
       'the old sector getMenuContent() is gone - nothing registers this class as a sector');
 
 $options = $entry['options'] ?? [];
-check(array_keys($options) === ['insights', 'report', 'useraccess', 'loginfailures', 'session', 'setup'],
+check(array_keys($options) === ['insights', 'report', 'useraccess', 'loginfailures', 'session', 'setup', 'manual'],
       'read-only user gets insights / report / user access / loginfailures / session / setup, in that order');
 check(!isset($options['activity']),
       'Activity Log is not a menu option - front/export.php renders no GLPI chrome');
@@ -107,7 +107,7 @@ foreach ($options as $key => $option) {
 // this same $options_rw.
 grant(READ | UPDATE, READ, READ);
 $options_rw = $M::entry()['options'];
-check(array_keys($options_rw) === ['insights', 'report', 'useraccess', 'loginfailures', 'session', 'correlation', 'provisioning', 'setup'],
+check(array_keys($options_rw) === ['insights', 'report', 'useraccess', 'loginfailures', 'session', 'correlation', 'provisioning', 'setup', 'manual'],
       'full rights -> the eight pages: the old ones plus user access after the report');
 check($options_rw['useraccess']['page'] === $BASE . '/useraccess.php',
       'the user access option points at the Phase 1 report');
@@ -127,7 +127,7 @@ check($options_rw['session']['page'] === $BASE . '/session.php',
 grant(0, 0, READ);
 $entry = $M::entry();
 check(is_array($entry), 'provisioning-only -> entry still returned, not hidden');
-check(array_keys($entry['options']) === ['provisioning'],
+check(array_keys($entry['options']) === ['provisioning', 'manual'],
       'provisioning-only user sees the provisioning page and nothing else');
 check($entry['page'] === $BASE . '/provisioning.php',
       'and the entry opens that page, not a report page that would deny them');
@@ -140,14 +140,14 @@ check($M::entry() === null, 'no right at all -> entry hidden');
 grant(0, READ);
 $entry = $M::entry();
 check(is_array($entry), 'reports-only -> entry still returned');
-check(array_keys($entry['options']) === ['insights', 'report', 'useraccess', 'loginfailures', 'session'],
+check(array_keys($entry['options']) === ['insights', 'report', 'useraccess', 'loginfailures', 'session', 'manual'],
       'reports-only sees insights + report + user access + Session, and not Setup / correlation / provisioning');
 
 // --- config-only: settings without the audit detail -------------------------
 grant(READ, 0);
 $entry = $M::entry();
 check(is_array($entry), 'config-only -> entry still returned');
-check(array_keys($entry['options']) === ['setup'],
+check(array_keys($entry['options']) === ['setup', 'manual'],
       'config-only sees Setup only - the reports would only 403 in their controllers');
 check($entry['page'] === $BASE . '/config.form.php', 'and the entry opens Setup');
 
@@ -204,8 +204,8 @@ foreach (glob($front . '/*.php') as $file) {
 // 21 since v4.11.0: front/accessuser.php and front/accessgroup.php, the User
 // and Group sub-tabs, under that same 'useraccess' option. (The members
 // pop-up, front/groupmembers.php, is an AJAX fragment and renders no chrome.)
-check(count($used) > 0 && array_sum(array_map('count', $used)) === 21,
-      'all 21 chrome-rendering front controllers were found');
+check(count($used) > 0 && array_sum(array_map('count', $used)) === 22,
+      'all 22 chrome-rendering front controllers were found (4.15.0: manual.php)');
 foreach ($used as $key => $files) {
     if ($key === '$tab') {
         continue;

@@ -435,6 +435,11 @@ class PluginIntegrasipamanConfig extends CommonDBTM
         // Every pane stays in this one form whichever tab is showing, so a
         // hidden tab's fields are still posted - the absent-vs-empty guard
         // on the categories list in front/config.form.php depends on it.
+        // v4.15.0 (suite rule 2026-11-09): the manual, linked from Setup too.
+        echo '<div class="d-flex justify-content-end mb-2"><a class="btn btn-sm btn-outline-secondary" href="'
+            . htmlescape(Plugin::getWebDir('integrasipaman') . '/front/manual.php') . '">'
+            . '<i class="ti ti-book me-1"></i>' . htmlescape(__('Manual', 'integrasipaman')) . '</a></div>';
+
         echo '<ul class="nav nav-tabs" role="tablist">';
         foreach ($sections as $key => [$title, $icon, , $tab]) {
             echo '<li class="nav-item" role="presentation">'

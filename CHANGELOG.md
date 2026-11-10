@@ -11,6 +11,11 @@ Author: ICT.
 This changelog starts at 4.11.0. For earlier releases, see the release's deploy checklist in the source repository
 (`docs/vX.Y.Z-deploy-checklist.md`) and its git tag.
 
+## [4.13.1] — 2026-11-07
+
+### Fixed
+- **Provisioning no longer offers Send for an asset that already exists in PAMAN.** The queue only knew about hosts this plugin had sent itself, so a host created in PAMAN by hand showed as Eligible with a Send button. Existence is now decided by identity (address, or name, case-insensitive) against the host list `entitlement_pull` already stores for the connection, independent of the type/OS mapping. Such a Computer is not queued, an unsent Eligible row is dropped on the next refresh, and the tab says the asset is already present.
+
 ## [4.13.0] — 2026-11-04
 
 A HIGH row (non-admin, production, high-risk) now says how the user reached production. Under the access policy, a

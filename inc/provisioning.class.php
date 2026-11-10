@@ -31,6 +31,9 @@ class PluginIntegrasipamanProvisioning extends CommonDBTM
     public const TABLE = 'glpi_plugin_jumpserver_provisioning';
 
     /** Eligible for PAMAN, never sent. */
+    /** The PAMAN host list the entitlement pull stores (= PluginIntegrasipamanEntitlement::HOSTS_TABLE). */
+    private const HOSTS_TABLE = 'glpi_plugin_jumpserver_hosts';
+
     public const STATUS_ELIGIBLE = 'eligible';
     /** Live in PAMAN, and GLPI agrees with what was sent. */
     public const STATUS_PROVISIONED = 'provisioned';
@@ -202,6 +205,91 @@ class PluginIntegrasipamanProvisioning extends CommonDBTM
      * @param array{states_id?:int, is_deleted?:int} $computer
      * @param array{dispose_states?:list<int>} $criteria
      */
+    /**
+     * The PAMAN host this Computer already is, out of a pulled host list
+     * (v4.13.1). Identity only - the address, or the name, case-insensitive -
+     * never the type/OS mapping, which matters only for a new Send. When the
+     * two point at different hosts the address wins: it is what a Send would
+     * collide on. Null when neither matches.
+     *
+     * @param list<array{jms_id:string,name:string,address:string}> $hosts
+     * @return array{jms_id:string,name:string,address:string}|null
+     */
+    public static function matchExisting(string $name, string $address, array $hosts): ?array
+    {
+        $name    = mb_strtolower(trim($name));
+        $address = trim($address);
+        $by_name = null;
+        foreach ($hosts as $host) {
+            if ($address !== '' && trim((string) ($host['address'] ?? '')) === $address) {
+                return $host;
+            }
+            if ($by_name === null && $name !== '' && mb_strtolower(trim((string) ($host['name'] ?? ''))) === $name) {
+                $by_name = $host;
+            }
+        }
+
+        return $by_name;
+    }
+
+    /**
+     * matchExisting() against the hosts the entitlement pull stored for the
+     * CURRENT connection. A host added by hand since the last pull is not
+     * seen here; the Send path still looks the address up live and adopts.
+     *
+     * @return array{jms_id:string,name:string,address:string}|null
+     */
+    public static function existingHost(string $name, string $address): ?array
+    {
+        global $DB;
+
+        $name    = trim($name);
+        $address = trim($address);
+        if ($name === '' && $address === '') {
+            return null;
+        }
+
+        $or = [];
+        if ($address !== '') {
+            $or[] = ['address' => $address];
+        }
+        if ($name !== '') {
+            $or[] = ['name' => $name];
+        }
+
+        $hosts = [];
+        foreach ($DB->request([
+            'SELECT' => ['jms_id', 'name', 'address'],
+            'FROM'   => self::HOSTS_TABLE,
+            'WHERE'  => ['OR' => $or] + PluginIntegrasipamanConnection::ownRows(),
+        ]) as $host) {
+            $hosts[] = $host;
+        }
+
+        return self::matchExisting($name, $address, $hosts);
+    }
+
+    /** existingHost() as the connection that serves the Computer's entity. */
+    private static function existingHostFor(Computer $item, string $address): ?array
+    {
+        $connection = PluginIntegrasipamanConnection::forEntity((int) ($item->fields['entities_id'] ?? 0));
+        $name       = (string) ($item->fields['name'] ?? '');
+
+        return $connection === null
+            ? self::existingHost($name, $address)
+            : PluginIntegrasipamanConnection::using($connection, static fn () => self::existingHost($name, $address));
+    }
+
+    /** The tab's line for a Computer PAMAN already holds, Send withheld. */
+    private static function renderExisting(array $host): void
+    {
+        echo '<div class="alert alert-info mb-0">' . htmlescape(sprintf(
+            PluginIntegrasipamanServerLabel::in(__('This Computer is already in {server} as %1$s (%2$s). It is not queued for provisioning, so it cannot be sent a second time.', 'integrasipaman')),
+            (string) ($host['name'] ?? ''),
+            (string) ($host['address'] ?? '')
+        )) . '</div>';
+    }
+
     public static function isDisposed(array $computer, array $criteria): bool
     {
         if ((int) ($computer['is_deleted'] ?? 0) === 1) {
@@ -564,9 +652,20 @@ class PluginIntegrasipamanProvisioning extends CommonDBTM
             return;
         }
 
+        // v4.13.1: a host PAMAN already holds - created by hand, or by an
+        // earlier tool - is not a candidate for a Send, whatever the type/OS
+        // mapping says. It is treated like an ineligible Computer: a queue
+        // row that never reached PAMAN through us is dropped.
+        $existing = (!$in_paman && $served)
+            ? self::existingHost((string) ($fields['name'] ?? ''), $address)
+            : null;
+
         $verdict = $served
             ? self::isEligible($fields, $address, $criteria)
             : ['eligible' => false];
+        if ($existing !== null) {
+            $verdict = ['eligible' => false];
+        }
 
         if (!$verdict['eligible']) {
             if ($has_row && !$in_paman && $status === self::STATUS_ELIGIBLE) {
@@ -814,6 +913,11 @@ class PluginIntegrasipamanProvisioning extends CommonDBTM
         $address      = self::pickAddress(self::addressesFor($computers_id));
         // Judged by the rules of the connection that serves the Computer's entity.
         $criteria     = self::criteriaFromConfig(PluginIntegrasipamanConnection::forEntity((int) ($item->fields['entities_id'] ?? 0)));
+        $existing     = self::existingHostFor($item, $address);
+        if ($existing !== null) {
+            self::renderExisting($existing);
+            return;
+        }
         $verdict      = self::isEligible($item->fields, $address, $criteria);
 
         echo '<div class="alert alert-info mb-0">';
@@ -848,6 +952,16 @@ class PluginIntegrasipamanProvisioning extends CommonDBTM
         }
 
         $status = (string) $row->fields['status'];
+
+        // An old Eligible row for a host PAMAN already holds: the next scan
+        // drops it; until then, say so and withhold Send.
+        if ($status === self::STATUS_ELIGIBLE && trim((string) $row->fields['jumpserver_asset_id']) === '') {
+            $existing = self::existingHostFor($item, self::pickAddress(self::addressesFor((int) $item->getID())));
+            if ($existing !== null) {
+                self::renderExisting($existing);
+                return;
+            }
+        }
 
         $node_lookup     = PluginIntegrasipamanNodeMap::asLookup();
         $platform_lookup = PluginIntegrasipamanPlatformMap::asLookup();

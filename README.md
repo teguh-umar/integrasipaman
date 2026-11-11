@@ -5,8 +5,9 @@ A [GLPI](https://glpi-project.org/) 11 plugin that connects GLPI to one or more
 REST API, pulls audit data on a schedule, and adds risk evaluation, correlation to GLPI assets
 and users, access reporting and human-gated asset provisioning on top of it.
 
-Current version: **4.11.1**. Changes are listed in `CHANGELOG.md` (from 4.11.0). A user manual in Indonesian, written for 3.4.2, ships as
-`docs/MANUAL.id.md` in the published repository; it predates everything in 4.x.
+Current version: **4.15.2**. Changes are listed in `CHANGELOG.md` (from 4.11.0). The user manual,
+in Indonesian and documenting 4.15.0, ships as `docs/manual.md` and opens inside GLPI from the
+plugin's **Manual** menu entry (4.15.0).
 
 > The seed values for the risk-evaluation config — the admin user list and the production IP
 > prefixes — are configuration, not data this plugin stands behind. Set your own from the
@@ -26,7 +27,9 @@ Current version: **4.11.1**. Changes are listed in `CHANGELOG.md` (from 4.11.0).
 - **Command risk evaluation** — classifies every pulled command: high-risk keyword or JumpServer
   risk level, category, whether the target is a production asset, whether the actor is a known
   admin, and a resulting priority and note. Rules are editable lists; changing a list
-  re-evaluates the history.
+  re-evaluates the history. From 4.13.0 a high-priority command is noted either as typed inside a
+  **shared session** (by someone who joined another user's session, while joined) or as **direct
+  non-admin access**; both note texts are settings.
 - **Asset and user correlation** — resolves each JumpServer asset to a production verdict (core
   IP networks, "IP Addressing" plugin ranges, or a matched GLPI `Computer`) and each JumpServer
   actor to an admin verdict (GLPI group membership), with per-row manual override.
@@ -44,13 +47,20 @@ Current version: **4.11.1**. Changes are listed in `CHANGELOG.md` (from 4.11.0).
   table above). 4.11.1 stops a deleted-and-recreated Computer from counting the same access twice.
 - **Asset provisioning (PAMAN)** — Computers eligible for the bastion wait in a queue; sending,
   re-sending and removing are manual actions behind their own right, and removal needs an
-  approved ticket. Nothing is pushed on save.
+  approved ticket. Nothing is pushed on save. A Computer the bastion already holds (same address,
+  or same name) is never queued or sent again (4.13.1). The node comes from the Computer type
+  and the platform from the operating system: an exact mapping first, then a per-connection
+  OS-family rule such as `Linux: ubuntu, red hat, ...` (4.14.0). A row whose node or platform
+  cannot be resolved reads *Eligible - needs mapping*, with Send disabled and links to the
+  mapping lists, which have their own **Add** buttons.
 - **Entitlements** — a weekly pull of JumpServer asset permission rules and user-group
   membership, shown per Computer as "Who has access", including machines nobody has used yet.
 - **Reports and pages** (one menu entry in the shared PGN Suite sidebar sector):
   - *PBI Insights* — an optional view on a separate read-only reporting database
   - *Command Audit Report* — period-scoped, with KPI strip, summary tables, sortable high-risk
-    detail and CSV / Excel / print export
+    detail and CSV / Excel / print export. From 4.12.0 the high-risk detail shows who joined the
+    session (`JoinedBy`) and whose session it was (`SharedBy`), and can be filtered to sessions
+    that were shared
   - *User access* (4.9.0) — the grant-path report above, filterable by asset, person or group,
     paged, with CSV export of the whole filtered result rather than the page
   - *Login failures* — every refusal reason with the accounts behind it, accounts with repeated
@@ -61,6 +71,9 @@ Current version: **4.11.1**. Changes are listed in `CHANGELOG.md` (from 4.11.0).
     *Session Sharing* shows who shared a session, with whom (or "anyone with the link and code"),
     which session, until when, and whether it is still open
   - *Asset & user correlation*, *Asset provisioning*, *Setup*
+  - *Manual* (4.15.0) — the user manual, rendered inside GLPI for anyone with any of the
+    plugin's rights; raw HTML in it is escaped. The page says when the manual documents an older
+    minor release than the one installed
 - **Dashboard cards** — All Events, Events by Type (pie and bar), Login Failures, Login Lockouts,
   Session Sharing and Recent Events. The big-number cards show the change against the previous
   period and link to the page behind them. *All Events* counts every event in the window, so the
@@ -133,7 +146,8 @@ inc/                       one class per concern (connection, cron, terminalpull
                            dashboard, menu, profile, ...)
 front/                     controllers: config.form, pbi (Insights + Report), useraccess,
                            loginfailures, session, correlation, provisioning, mapping lists,
-                           one-shot backfills, exports
+                           manual, one-shot backfills, exports
+docs/manual.md             the user manual (Indonesian), shown by front/manual.php
 lib/pgnsuite/              files shared byte-for-byte with the other PGN suite plugins; a
                            divergent copy would silently win for the whole suite
 tests/                     offline suites, run each with a bare PHP CLI

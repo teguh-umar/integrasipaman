@@ -11,6 +11,11 @@ Author: ICT.
 This changelog starts at 4.11.0. For earlier releases, see the release's deploy checklist in the source repository
 (`docs/vX.Y.Z-deploy-checklist.md`) and its git tag.
 
+## [4.15.2] — 2026-11-11
+
+### Changed
+- **README brought up to date.** It said 4.11.1 and pointed at an old 3.4.2 manual. It now names the current version and the in-plugin Manual (`docs/manual.md`, 4.15.0), and describes the shared-session notes and the `JoinedBy` / `SharedBy` columns (4.12.0, 4.13.0), the provisioning existence check, OS-family platforms and "needs mapping" (4.13.1, 4.14.0), and the Manual page (4.15.0). No code change.
+
 ## [4.15.1] — 2026-11-10
 
 ### Changed

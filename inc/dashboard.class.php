@@ -113,12 +113,17 @@ class PluginIntegrasipamanDashboard extends CommonGLPI
      * core/other plugins so contributions can be appended without
      * clobbering them.
      *
-     * @param array<string, mixed> $cards Cards registered so far.
+     * @param array<string, mixed>|null $cards Cards registered so far. GLPI's
+     *        Plugin::doHookFunction() can call a hook with no argument, so
+     *        this arrives as null: a strict `array` type fataled the whole
+     *        dashboard page (fixed in 4.15.4).
      *
      * @return array<string, mixed> Cards including this plugin's additions.
      */
-    public static function getCardTypes(array $cards = []): array
+    public static function getCardTypes(?array $cards = []): array
     {
+        $cards ??= [];
+
         if (!self::canViewCards()) {
             return $cards;
         }

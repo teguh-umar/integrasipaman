@@ -157,6 +157,18 @@ namespace {
     check($D::getCardTypes(['x' => 1]) === ['x' => 1], 'and the cards are not even offered');
     $GLOBALS['CAN'] = true;
 
+    // v4.15.4: GLPI's Plugin::doHookFunction('dashboard_cards') calls the hook with NO
+    // argument, so the callback receives null. A strict `array` type fataled the whole
+    // dashboard page ("Argument #1 ($cards) must be of type array, null given").
+    $r = null;
+    try { $r = $D::getCardTypes(null); } catch (\TypeError $e) { $r = 'TypeError'; }
+    check(is_array($r) && count($r) === 7, 'called with null (GLPI passes no argument) it returns the cards instead of a TypeError');
+    $GLOBALS['CAN'] = false;
+    $r = null;
+    try { $r = $D::getCardTypes(null); } catch (\TypeError $e) { $r = 'TypeError'; }
+    check($r === [], 'null without the report right returns an empty list');
+    $GLOBALS['CAN'] = true;
+
     // --- the list ------------------------------------------------------------------------
     $row = ['date_creation' => '2026-10-12 09:14:00', 'event_type' => 'session_share_join', 'username' => 'agus.prasetyo',
             'asset_name' => 'db-prod-02', 'status' => 'success'];

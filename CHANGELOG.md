@@ -11,6 +11,11 @@ Author: ICT.
 This changelog starts at 4.11.0. For earlier releases, see the release's deploy checklist in the source repository
 (`docs/vX.Y.Z-deploy-checklist.md`) and its git tag.
 
+## [4.15.4] — 2026-11-16
+
+### Fixed
+- **The GRC & Compliance dashboard (and any page that builds the dashboard card list) no longer dies with *getCardTypes(): Argument #1 ($cards) must be of type array, null given*.** GLPI calls the `dashboard_cards` hook with no argument, so the callback receives null; the strict `array` type turned that into a fatal. `getCardTypes()` now accepts null and treats it as an empty list. Present in 4.15.2 and 4.15.3 on every page that lists dashboard cards. Found by the grcbridge session on staging 2; confirmed by the orchestrator.
+
 ## [4.15.3] — 2026-11-15
 
 ### Fixed

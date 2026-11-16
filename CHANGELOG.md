@@ -11,6 +11,11 @@ Author: ICT.
 This changelog starts at 4.11.0. For earlier releases, see the release's deploy checklist in the source repository
 (`docs/vX.Y.Z-deploy-checklist.md`) and its git tag.
 
+## [4.15.3] — 2026-11-15
+
+### Fixed
+- **Fresh install no longer stops half-way.** On an empty database, `plugin:install` reached the v4.5.1 back-fill (`joins_backfilled`) before the connection column existed on the logs table and failed with *Unknown column 'l.plugin_jumpserver_connections_id'*, leaving half the tables. The back-fill now also requires that column. An upgrade (production) is not affected: the column has been there since 4.0.0. Found by the grcbridge session on a fresh staging install. Verified on the VM as `4.15.3-rc1`: production upgrade clean, staging fresh install complete, session-pull cron run completed.
+
 ## [4.15.2] — 2026-11-11
 
 ### Changed

@@ -1527,7 +1527,10 @@ function plugin_integrasipaman_install(): bool
     // cron re-fetch a history it already has. Dedup would make the re-fetch
     // harmless but not free, and "harmless but pointless" is how a pull that
     // should take a second starts taking a minute.
-    if ($DB->fieldExists($connections_table, 'joins_backfilled', false)) {
+    // A fresh install reaches this point before the connection FK column is added to the
+    // logs table (it is added further down), so the column must exist before it is read.
+    if ($DB->fieldExists($connections_table, 'joins_backfilled', false)
+        && $DB->fieldExists($table, 'plugin_jumpserver_connections_id', false)) {
         $fk = 'plugin_jumpserver_connections_id';
         $DB->doQuery(
             "UPDATE `$connections_table` c SET c.`joins_backfilled` = NOW()
